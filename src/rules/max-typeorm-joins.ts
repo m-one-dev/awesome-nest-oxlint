@@ -1,12 +1,16 @@
 import type { TSESLint, TSESTree } from '@typescript-eslint/utils';
+import { AST_NODE_TYPES } from '@typescript-eslint/types';
 import {
-  AST_NODE_TYPES,
-  ASTUtils,
-  ESLintUtils,
-} from '@typescript-eslint/utils';
-import * as ts from 'typescript';
+  type Checker,
+  type Symbol as TsSymbol,
+  SymbolFlags,
+  type Type,
+  type UnionOrIntersectionType,
+} from 'tsrs/sync';
 
+import { typesFor } from '../types/type-service.js';
 import { createRule } from '../utils/create-rule.js';
+import { findVariable } from '../utils/find-variable.js';
 
 type MessageIds = 'tooManyJoins';
 
@@ -55,71 +59,78 @@ export const maxTypeormJoins = createRule<Options, MessageIds>({
         additionalProperties: false,
       },
     ],
+    defaultOptions: [{ max: DEFAULT_MAX }],
   },
-  defaultOptions: [{ max: DEFAULT_MAX }],
   create(context, [option]): TSESLint.RuleListener {
     const max = option?.max ?? DEFAULT_MAX;
-    const services = ESLintUtils.getParserServices(context);
-    const checker = services.program.getTypeChecker();
+    // TypeScript's checker for this file, asked for once the whole file has been walked.
+    let checker: Checker;
 
-    function symbolIsFromTypeorm(symbol: ts.Symbol | undefined): boolean {
+    function symbolIsFromTypeorm(symbol: TsSymbol | undefined): boolean {
       if (!symbol) {
         return false;
       }
-      const visited = new Set<ts.Symbol>();
-      const stack: ts.Symbol[] = [symbol];
+      const visited = new Set<number>();
+      const stack: TsSymbol[] = [symbol];
       while (stack.length > 0) {
         const current = stack.pop();
-        if (!current || visited.has(current)) {
+        if (!current || visited.has(current.id)) {
           continue;
         }
-        visited.add(current);
-        const decls = current.getDeclarations() ?? [];
-        for (const decl of decls) {
-          const fileName = decl.getSourceFile().fileName;
-          if (
-            fileName.includes('/typeorm/') ||
-            fileName.includes('\\typeorm\\')
-          ) {
-            return true;
-          }
+        visited.add(current.id);
+        if (
+          current.declarations.some((decl) =>
+            /[\\/]typeorm[\\/]/.test(decl.path),
+          )
+        ) {
+          return true;
         }
-        if ((current.flags & ts.SymbolFlags.Alias) !== 0) {
-          try {
-            const aliased = checker.getAliasedSymbol(current);
-            if (aliased && aliased !== current) {
-              stack.push(aliased);
-            }
-          } catch {
-            // ignore — getAliasedSymbol can throw on unresolved aliases
+        if ((current.flags & SymbolFlags.Alias) !== 0) {
+          const aliased = checker.getAliasedSymbol(current);
+          if (aliased.id !== current.id) {
+            stack.push(aliased);
           }
         }
       }
       return false;
     }
 
-    function isQueryBuilderType(type: ts.Type): boolean {
-      const seen = new Set<ts.Type>();
-      const stack: Array<{ type: ts.Type; depth: number }> = [
-        { type, depth: 0 },
-      ];
+    // Many joins share one builder type; each type is walked once per file.
+    const isQueryBuilderCache = new Map<number, boolean>();
+
+    function isQueryBuilderType(type: Type): boolean {
+      const cached = isQueryBuilderCache.get(type.id);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const result = walkForQueryBuilder(type);
+      isQueryBuilderCache.set(type.id, result);
+      return result;
+    }
+
+    function walkForQueryBuilder(type: Type): boolean {
+      const seen = new Set<number>();
+      const stack: Array<{ type: Type; depth: number }> = [{ type, depth: 0 }];
       while (stack.length > 0) {
         const current = stack.pop();
-        if (!current || seen.has(current.type)) {
+        if (!current || seen.has(current.type.id)) {
           continue;
         }
-        seen.add(current.type);
+        seen.add(current.type.id);
         if (current.depth > MAX_HERITAGE_DEPTH) {
           continue;
         }
-        if (current.type.isUnion() || current.type.isIntersection()) {
-          for (const sub of current.type.types) {
+        if (current.type.isUnionType() || current.type.isIntersectionType()) {
+          for (const sub of (
+            current.type as UnionOrIntersectionType
+          ).getTypes()) {
             stack.push({ type: sub, depth: current.depth + 1 });
           }
           continue;
         }
-        const symbol = current.type.getSymbol() ?? current.type.aliasSymbol;
-        const name = symbol?.getName();
+        const symbol =
+          current.type.getSymbol() ?? current.type.getAliasSymbol();
+        const name = symbol?.name;
         if (
           name &&
           QUERY_BUILDER_TYPE_NAMES.has(name) &&
@@ -133,21 +144,6 @@ export const maxTypeormJoins = createRule<Options, MessageIds>({
         }
       }
       return false;
-    }
-
-    const isQueryBuilderCache = new WeakMap<TSESTree.Node, boolean>();
-
-    function exprIsQueryBuilder(node: TSESTree.Node): boolean {
-      const cached = isQueryBuilderCache.get(node);
-      if (cached !== undefined) {
-        return cached;
-      }
-      const tsNode = services.esTreeNodeToTSNodeMap.get(node);
-      const result = tsNode
-        ? isQueryBuilderType(checker.getTypeAtLocation(tsNode))
-        : false;
-      isQueryBuilderCache.set(node, result);
-      return result;
     }
 
     function unwrapChain(node: TSESTree.Node): TSESTree.Node {
@@ -216,7 +212,7 @@ export const maxTypeormJoins = createRule<Options, MessageIds>({
       node: TSESTree.Identifier,
     ): TSESTree.CallExpression | null {
       const scope = context.sourceCode.getScope(node);
-      const variable = ASTUtils.findVariable(scope, node.name);
+      const variable = findVariable(scope, node.name);
       if (!variable) {
         return null;
       }
@@ -260,6 +256,12 @@ export const maxTypeormJoins = createRule<Options, MessageIds>({
       return result;
     }
 
+    // Joins in the order their calls exit, which is source order along a chain.
+    const candidates: Array<{
+      origin: TSESTree.CallExpression;
+      receiver: TSESTree.Node;
+      reportNode: TSESTree.Node;
+    }> = [];
     const joinCounts = new Map<TSESTree.CallExpression, number>();
 
     function recordJoin(
@@ -294,10 +296,33 @@ export const maxTypeormJoins = createRule<Options, MessageIds>({
         if (!origin) {
           return;
         }
-        if (!exprIsQueryBuilder(callee.object)) {
+        candidates.push({
+          origin,
+          receiver: callee.object,
+          reportNode: callee.property,
+        });
+      },
+      // Types are asked for once per file, in one request, when the file's joins are all known.
+      'Program:exit'(): void {
+        if (candidates.length === 0) {
           return;
         }
-        recordJoin(origin, callee.property);
+        const types = typesFor(context);
+        if (types === undefined) {
+          return;
+        }
+        checker = types.checker;
+        // A look-alike with its own `leftJoin` must not be counted: keep the
+        // joins called on a TypeORM builder.
+        const receiverTypes = checker.getTypeAtLocation(
+          candidates.map(({ receiver }) => types.nodeFor(receiver)),
+        );
+        candidates.forEach(({ origin, reportNode }, index) => {
+          const receiverType = receiverTypes[index];
+          if (receiverType !== undefined && isQueryBuilderType(receiverType)) {
+            recordJoin(origin, reportNode);
+          }
+        });
       },
     };
   },

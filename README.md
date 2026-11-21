@@ -1,75 +1,71 @@
-# @m-one-dev/awesome-nest-eslint
+# @m-one-dev/awesome-nest-oxlint
 
-Opinionated ESLint plugin with NestJS-aware, TypeScript-aware rules used across m-one projects.
+Opinionated [oxlint](https://oxc.rs/docs/guide/usage/linter.html) plugin with NestJS-aware rules used across m-one projects. The type-aware rules get type information from [tsrs](https://github.com/oxc-project/tsrs), through its synchronous Node API.
+
+It runs on oxlint only. The same rules for ESLint are [`@m-one-dev/awesome-nest-eslint`](https://github.com/m-one-dev/awesome-nest-eslint).
 
 ## Install
 
 ```bash
-npm install -D @m-one-dev/awesome-nest-eslint
-# or
-pnpm add -D @m-one-dev/awesome-nest-eslint
-# or
-yarn add -D @m-one-dev/awesome-nest-eslint
+pnpm add -D @m-one-dev/awesome-nest-oxlint oxlint tsrs@0.24.0-ts7.1.0-beta
 ```
 
-## Usage (flat config)
+## Usage
 
-```ts
-// eslint.config.ts
-import awesomeNest from '@m-one-dev/awesome-nest-eslint';
-import { defineConfig } from 'eslint/config';
-
-export default defineConfig(
-  // ... your other configs
-  awesomeNest.configs.recommended,
-);
-```
-
-`configs.recommended` registers the plugin and turns on:
-
-| Rule | Severity | Files |
-|---|---|---|
-| `awesome-nest/no-typeorm-finder-methods` | error | all |
-| `awesome-nest/payload-type-suffix` | error | all |
-| `awesome-nest/unique-endpoint-dtos` | error | all |
-| `awesome-nest/uuid-field-naming` | error | all |
-| `awesome-nest/dto-must-extend-abstract-or-base` | error | `**/*.dto.ts`, `**/dto/**/*.ts` |
-
-`configs.all` enables every rule at error severity, no file scoping.
-
-## Rules
-
-- [`awesome-nest/no-typeorm-finder-methods`](./docs/rules/no-typeorm-finder-methods.md) — bans TypeORM entity-read finders, auto-fixes to `createQueryBuilder` chains.
-- [`awesome-nest/no-unused-injectable`](./docs/rules/no-unused-injectable.md) — flags `@Injectable()` services that are only registered in `@Module()` decorators (or nowhere) and never consumed.
-- [`awesome-nest/dto-must-extend-abstract-or-base`](./docs/rules/dto-must-extend-abstract-or-base.md) — DTOs must transitively extend `AbstractDto` / `BaseDto`.
-- [`awesome-nest/payload-type-suffix`](./docs/rules/payload-type-suffix.md) — NATS payload types must end with `PayloadDto` / pagination DTO suffixes.
-- [`awesome-nest/unique-endpoint-dtos`](./docs/rules/unique-endpoint-dtos.md) — each endpoint slot (`@Body`, `@Query`, response) must use its own DTO across the project.
-- [`awesome-nest/uuid-field-naming`](./docs/rules/uuid-field-naming.md) — fields/parameters/locals typed as the `Uuid` brand must end with `Id`; `Uuid[]` must end with `Ids`. Optional reverse direction (`enforceReverse`) enforces the inverse with a regex-based exempt list (`allowNonUuidNames`).
-
-## Requirements
-
-All rules are TypeScript-aware. Your ESLint config must use `@typescript-eslint/parser` with a typed parser service:
-
-```ts
-parserOptions: {
-  projectService: true,
-  // or: project: ['./tsconfig.json'],
-  tsconfigRootDir: import.meta.dirname,
+```jsonc
+// .oxlintrc.json
+{
+  "jsPlugins": [{ "name": "awesome-nest", "specifier": "@m-one-dev/awesome-nest-oxlint" }],
+  "options": { "typeAware": true },
+  "rules": {
+    "awesome-nest/no-typeorm-finder-methods": "error",
+    "awesome-nest/valid-typeorm-join-path": "error"
+  }
 }
 ```
 
-Peer dependencies:
+Each oxlint process opens one tsrs session. A file is checked in the first program that contains it: the nearest `tsconfig.json`, or a `tsconfig.typecheck.json` beside it, walking up to the package root. A file in no program gets no type-aware checks. When tsrs cannot answer (it will not start, it dies, or a query fails), the lint fails on that file with the cause.
 
-- `eslint >= 9`
-- `typescript >= 5.4`
-- `@typescript-eslint/parser >= 8`
+## Rules
+
+| Rule | Types | Checks |
+|---|---|---|
+| [`dto-decorator-optionality-must-match-type`](./docs/rules/) | yes | `*Optional` decorators match `?`, and `nullable: true` matches a type that includes `null` |
+| [`dto-must-extend-abstract-or-base`](./docs/rules/dto-must-extend-abstract-or-base.md) | yes | DTOs transitively extend `AbstractDto` / `BaseDto` |
+| [`max-typeorm-joins`](./docs/rules/) | yes | at most 3 joins per `createQueryBuilder` chain |
+| [`naming-convention`](./docs/rules/naming-convention.md) | yes | the workspace's naming convention, a subset of typescript-eslint's rule |
+| [`no-api-property-decorator`](./docs/rules/) | no | DTOs use the field decorators, not `@ApiProperty` |
+| [`no-builtin-exception-instantiation`](./docs/rules/) | no | domain exceptions instead of Nest's built-in ones |
+| [`no-double-cast-laundering`](./docs/rules/no-double-cast-laundering.md) | no | bans `as unknown as X` |
+| [`no-dto-direct-instantiation`](./docs/rules/no-dto-direct-instantiation.md) | no | DTOs are built with `.create()` |
+| [`no-duplicate-module-entries`](./docs/rules/) | no | a class appears once per `@Module` array |
+| [`no-implicit-enum-to-string`](./docs/rules/no-implicit-enum-to-string.md) | yes | a string enum is not passed where a plain `string` is expected |
+| [`no-typeorm-finder-methods`](./docs/rules/no-typeorm-finder-methods.md) | yes | bans TypeORM entity-read finders, auto-fixing to `createQueryBuilder` chains |
+| [`payload-type-suffix`](./docs/rules/payload-type-suffix.md) | yes | NATS payload types end with `PayloadDto` / pagination DTO suffixes |
+| [`prefer-promise-all`](./docs/rules/) | no | independent awaits run with `Promise.all` |
+| [`prefer-raw-terminal-on-select`](./docs/rules/prefer-raw-terminal-on-select.md) | yes | a chain that selects ends with `getRawOne` / `getRawMany<T>()` |
+| [`require-api-endpoint-docs`](./docs/rules/) | no | every endpoint carries its Swagger docs |
+| [`require-client-action-on-nats-pattern`](./docs/rules/require-client-action-on-nats-pattern.md) | no | NATS patterns name a client action |
+| [`require-object-literal-anchor`](./docs/rules/require-object-literal-anchor.md) | yes | an object literal with no contextual type is anchored with `satisfies` |
+| [`require-use-dto-decorator`](./docs/rules/require-use-dto-decorator.md) | yes | entities carry `@UseDto` |
+| [`swagger-matches-return-type`](./docs/rules/) | yes | the success Swagger `type` matches the return type |
+| [`unique-endpoint-dtos`](./docs/rules/unique-endpoint-dtos.md) | yes | each endpoint slot (`@Body`, `@Query`, response) uses its own DTO across the program; the usage in the file whose path sorts first owns it |
+| [`uuid-field-naming`](./docs/rules/) | yes | `Uuid` names end with `Id`, `Uuid[]` with `Ids` |
+| [`valid-typeorm-join-path`](./docs/rules/valid-typeorm-join-path.md) | yes | a join names a real relation on an alias already in the chain |
+
+awesome-nest-eslint's `no-unused-injectable` needs the whole workspace at once, so it is not a rule here.
+
+## Requirements
+
+- `oxlint >= 1.93.0`, with `options.typeAware: true`
+- `tsrs` at the version in `peerDependencies`: the rules use its API, so upgrade them together
 
 ## Development
 
 ```bash
 pnpm install
 pnpm build
-pnpm test
+pnpm test   # oxlint's RuleTester, under vitest
 ```
 
 ## Releasing

@@ -1,21 +1,12 @@
 import * as path from 'node:path';
-import { RuleTester } from '@typescript-eslint/rule-tester';
+import { RuleTester } from 'oxlint/plugins-dev';
 
 import { requireClientActionOnNatsPattern } from '../../src/rules/require-client-action-on-nats-pattern.js';
 
 const fixturesDir = path.resolve(import.meta.dirname, '..', 'fixtures');
+const filename = path.join(fixturesDir, 'require-client-action-on-nats-pattern.ts');
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    parserOptions: {
-      projectService: {
-        allowDefaultProject: ['*.ts', '*.tsx'],
-        defaultProject: 'tsconfig.json',
-      },
-      tsconfigRootDir: fixturesDir,
-    },
-  },
-});
+const ruleTester = new RuleTester();
 
 const DECORATOR_DECLS = `
   declare function MessagePattern(pattern: unknown): MethodDecorator;
@@ -47,6 +38,7 @@ ruleTester.run(
     valid: [
       {
         name: 'valid: @MessagePattern with *ClientAction member access',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           ${ENUM_DECLS}
@@ -58,6 +50,7 @@ ruleTester.run(
       },
       {
         name: 'valid: @EventPattern with *ClientAction member access',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           ${ENUM_DECLS}
@@ -69,6 +62,7 @@ ruleTester.run(
       },
       {
         name: 'valid: TS as-cast unwrapped',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           ${ENUM_DECLS}
@@ -80,6 +74,7 @@ ruleTester.run(
       },
       {
         name: 'valid: TS non-null assertion unwrapped',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           ${ENUM_DECLS}
@@ -91,6 +86,7 @@ ruleTester.run(
       },
       {
         name: 'valid: TS satisfies unwrapped',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           ${ENUM_DECLS}
@@ -102,6 +98,7 @@ ruleTester.run(
       },
       {
         name: 'valid: namespaced enum (Foo.AuthClientAction.LOGIN) - enum segment matches',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           ${ENUM_DECLS}
@@ -113,6 +110,7 @@ ruleTester.run(
       },
       {
         name: 'valid: this.send inside *ClientService extending AbstractClientService',
+        filename,
         code: `
           ${ENUM_DECLS}
           ${ABSTRACT_BASE_DECL}
@@ -125,6 +123,7 @@ ruleTester.run(
       },
       {
         name: 'valid: this.emit inside *ClientService',
+        filename,
         code: `
           ${ENUM_DECLS}
           ${ABSTRACT_BASE_DECL}
@@ -137,6 +136,7 @@ ruleTester.run(
       },
       {
         name: 'valid: super.send inside *ClientService',
+        filename,
         code: `
           ${ENUM_DECLS}
           ${ABSTRACT_BASE_DECL}
@@ -149,6 +149,7 @@ ruleTester.run(
       },
       {
         name: 'valid: this.send inside AbstractClientService itself - excluded by class name',
+        filename,
         code: `
           declare class ClientProxy {
             send(pattern: unknown, data: unknown): unknown;
@@ -166,6 +167,7 @@ ruleTester.run(
       },
       {
         name: 'valid: this.emit on a non-*ClientService class is not flagged',
+        filename,
         code: `
           class NotificationGateway {
             emit(pattern: string, data: unknown) {
@@ -179,6 +181,7 @@ ruleTester.run(
       },
       {
         name: 'valid: external receiver send/emit (socket.emit, bot.send) is not flagged',
+        filename,
         code: `
           declare const socket: { emit(event: string, data: unknown): void };
           declare const bot: { send(chat: string, data: unknown): void };
@@ -195,6 +198,7 @@ ruleTester.run(
       },
       {
         name: 'valid: unrelated decorator @SubscribeMessage is not flagged',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           class Gateway {
@@ -205,6 +209,7 @@ ruleTester.run(
       },
       {
         name: 'valid: zero-arg @MessagePattern is silently skipped (TS will catch)',
+        filename,
         code: `
           declare function MessagePattern(...args: unknown[]): MethodDecorator;
           class C {
@@ -215,6 +220,7 @@ ruleTester.run(
       },
       {
         name: 'valid: this.send outside any class is not flagged (no enclosing class)',
+        filename,
         code: `
           ${ENUM_DECLS}
           declare const that: { send: (p: unknown, d: unknown) => void };
@@ -226,6 +232,7 @@ ruleTester.run(
     invalid: [
       {
         name: 'invalid: @MessagePattern with string literal',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           class C {
@@ -242,6 +249,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: @MessagePattern with template literal',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           declare const kind: string;
@@ -259,6 +267,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: @MessagePattern with bare identifier (variable rebind)',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           ${ENUM_DECLS}
@@ -277,6 +286,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: @MessagePattern with function call',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           declare function getPattern(): string;
@@ -294,6 +304,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: @MessagePattern with object literal',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           class C {
@@ -310,6 +321,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: @MessagePattern with computed enum access',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           ${ENUM_DECLS}
@@ -327,6 +339,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: @MessagePattern with wrong enum suffix',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           ${ENUM_DECLS}
@@ -344,6 +357,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: @EventPattern with string literal',
+        filename,
         code: `
           ${DECORATOR_DECLS}
           class C {
@@ -360,6 +374,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: this.send with string literal inside *ClientService',
+        filename,
         code: `
           ${ABSTRACT_BASE_DECL}
           class AuthClientService extends AbstractClientService {
@@ -377,6 +392,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: this.emit with string literal inside *ClientService',
+        filename,
         code: `
           ${ABSTRACT_BASE_DECL}
           class SeoClientService extends AbstractClientService {
@@ -394,6 +410,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: this.send with function-call pattern',
+        filename,
         code: `
           ${ABSTRACT_BASE_DECL}
           declare function getPattern(): string;
@@ -412,6 +429,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: this.send with wrong enum suffix',
+        filename,
         code: `
           ${ENUM_DECLS}
           ${ABSTRACT_BASE_DECL}
@@ -430,6 +448,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: this.send with computed access',
+        filename,
         code: `
           ${ENUM_DECLS}
           ${ABSTRACT_BASE_DECL}
@@ -448,6 +467,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: super.emit with string literal inside *ClientService',
+        filename,
         code: `
           ${ABSTRACT_BASE_DECL}
           class SeoClientService extends AbstractClientService {

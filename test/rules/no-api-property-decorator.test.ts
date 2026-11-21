@@ -1,22 +1,13 @@
 import * as path from 'node:path';
 
-import { RuleTester } from '@typescript-eslint/rule-tester';
+import { RuleTester } from 'oxlint/plugins-dev';
 
 import { noApiPropertyDecorator } from '../../src/rules/no-api-property-decorator.js';
 
 const fixturesDir = path.resolve(import.meta.dirname, '..', 'fixtures');
+const filename = path.join(fixturesDir, 'no-api-property-decorator.ts');
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    parserOptions: {
-      projectService: {
-        allowDefaultProject: ['*.ts', '*.tsx'],
-        defaultProject: 'tsconfig.json',
-      },
-      tsconfigRootDir: fixturesDir,
-    },
-  },
-});
+const ruleTester = new RuleTester();
 
 const preamble = `
   function StringField(_opts?: unknown): PropertyDecorator { return () => {}; }
@@ -31,6 +22,7 @@ ruleTester.run('no-api-property-decorator', noApiPropertyDecorator, {
   valid: [
     {
       name: 'valid: StringField used instead of ApiProperty',
+      filename,
       code: `${preamble}
         class FooDto {
           @StringField({ description: 'Name' })
@@ -40,6 +32,7 @@ ruleTester.run('no-api-property-decorator', noApiPropertyDecorator, {
     },
     {
       name: 'valid: UUIDField used instead of ApiProperty',
+      filename,
       code: `${preamble}
         class FooDto {
           @UUIDField({ description: 'ID' })
@@ -49,6 +42,7 @@ ruleTester.run('no-api-property-decorator', noApiPropertyDecorator, {
     },
     {
       name: 'valid: UUIDFieldOptional used instead of ApiPropertyOptional',
+      filename,
       code: `${preamble}
         class FooDto {
           @UUIDFieldOptional({ description: 'Optional ID' })
@@ -58,6 +52,7 @@ ruleTester.run('no-api-property-decorator', noApiPropertyDecorator, {
     },
     {
       name: 'valid: ClassField used for nested DTO',
+      filename,
       code: `${preamble}
         class BarDto {}
         class FooDto {
@@ -68,6 +63,7 @@ ruleTester.run('no-api-property-decorator', noApiPropertyDecorator, {
     },
     {
       name: 'valid: non-Dto class using ApiProperty is not checked (rule is file-scoped)',
+      filename,
       code: `${preamble}
         class FooController {
           // This file wouldn't match the *.dto.ts file filter in the ESLint config,
@@ -81,6 +77,7 @@ ruleTester.run('no-api-property-decorator', noApiPropertyDecorator, {
   invalid: [
     {
       name: 'invalid: @ApiProperty on class member',
+      filename,
       code: `${preamble}
         class FooDto {
           @ApiProperty({ description: 'Name' })
@@ -91,6 +88,7 @@ ruleTester.run('no-api-property-decorator', noApiPropertyDecorator, {
     },
     {
       name: 'invalid: @ApiPropertyOptional on class member',
+      filename,
       code: `${preamble}
         class FooDto {
           @ApiPropertyOptional({ description: 'Email' })
@@ -101,6 +99,7 @@ ruleTester.run('no-api-property-decorator', noApiPropertyDecorator, {
     },
     {
       name: 'invalid: mixed Field decorators and ApiProperty in same class',
+      filename,
       code: `${preamble}
         class FooDto {
           @StringField({ description: 'Name' })
@@ -114,6 +113,7 @@ ruleTester.run('no-api-property-decorator', noApiPropertyDecorator, {
     },
     {
       name: 'invalid: @ApiProperty with no options',
+      filename,
       code: `${preamble}
         class FooDto {
           @ApiProperty()
@@ -124,6 +124,7 @@ ruleTester.run('no-api-property-decorator', noApiPropertyDecorator, {
     },
     {
       name: 'invalid: @ApiPropertyOptional with nullable option',
+      filename,
       code: `${preamble}
         class FooDto {
           @ApiPropertyOptional({ nullable: true })

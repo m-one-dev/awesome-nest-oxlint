@@ -1,21 +1,12 @@
 import * as path from 'node:path';
-import { RuleTester } from '@typescript-eslint/rule-tester';
+import { RuleTester } from 'oxlint/plugins-dev';
 
 import { noBuiltinExceptionInstantiation } from '../../src/rules/no-builtin-exception-instantiation.js';
 
 const fixturesDir = path.resolve(import.meta.dirname, '..', 'fixtures');
+const filename = path.join(fixturesDir, 'no-builtin-exception-instantiation.ts');
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    parserOptions: {
-      projectService: {
-        allowDefaultProject: ['*.ts', '*.tsx'],
-        defaultProject: 'tsconfig.json',
-      },
-      tsconfigRootDir: fixturesDir,
-    },
-  },
-});
+const ruleTester = new RuleTester();
 
 ruleTester.run(
   'no-builtin-exception-instantiation',
@@ -24,6 +15,7 @@ ruleTester.run(
     valid: [
       {
         name: 'valid: extends a banned class with super() in subclass constructor',
+        filename,
         code: `
           declare class NotFoundException { constructor(msg?: string); }
           class PostNotFoundException extends NotFoundException {
@@ -35,6 +27,7 @@ ruleTester.run(
       },
       {
         name: 'valid: extends a banned Rpc class without explicit constructor',
+        filename,
         code: `
           declare class RpcNotFoundException { constructor(msg?: string); }
           class PostNotFoundException extends RpcNotFoundException {}
@@ -42,6 +35,7 @@ ruleTester.run(
       },
       {
         name: 'valid: throwing a custom domain exception',
+        filename,
         code: `
           declare class PostNotFoundException { constructor(); }
           throw new PostNotFoundException();
@@ -49,6 +43,7 @@ ruleTester.run(
       },
       {
         name: 'valid: new on an unrelated class',
+        filename,
         code: `
           class Foo {}
           const f = new Foo();
@@ -56,6 +51,7 @@ ruleTester.run(
       },
       {
         name: 'valid: new on a custom class whose name does not match',
+        filename,
         code: `
           class MyException { constructor(msg: string) {} }
           throw new MyException('boom');
@@ -63,6 +59,7 @@ ruleTester.run(
       },
       {
         name: 'valid: re-export of a banned name without instantiation',
+        filename,
         code: `
           declare class NotFoundException {}
           export { NotFoundException };
@@ -73,6 +70,7 @@ ruleTester.run(
     invalid: [
       {
         name: 'invalid: throw new NotFoundException with literal string',
+        filename,
         code: `
           declare class NotFoundException { constructor(msg?: string); }
           throw new NotFoundException('Restaurant not found');
@@ -86,6 +84,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: throw new NotFoundException with no args (zero-arg still banned)',
+        filename,
         code: `
           declare class NotFoundException { constructor(msg?: string); }
           throw new NotFoundException();
@@ -99,6 +98,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: throw new NotFoundException with non-literal arg',
+        filename,
         code: `
           declare class NotFoundException { constructor(msg?: string); }
           declare const reason: string;
@@ -113,6 +113,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: throw new RpcConflictException',
+        filename,
         code: `
           declare class RpcConflictException { constructor(msg?: string); }
           declare const error: { message: string };
@@ -127,6 +128,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: throw new HttpException base class',
+        filename,
         code: `
           declare class HttpException { constructor(msg: string, status: number); }
           throw new HttpException('boom', 500);
@@ -140,6 +142,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: throw new RpcException base class',
+        filename,
         code: `
           declare class RpcException { constructor(err: any); }
           throw new RpcException({ code: 'X' });
@@ -153,6 +156,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: assignment then throw still flagged',
+        filename,
         code: `
           declare class NotFoundException { constructor(msg?: string); }
           const e = new NotFoundException('x');
@@ -167,6 +171,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: throw new BadRequestException',
+        filename,
         code: `
           declare class BadRequestException { constructor(msg?: string); }
           throw new BadRequestException('bad');
@@ -180,6 +185,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: throw new UnauthorizedException',
+        filename,
         code: `
           declare class UnauthorizedException { constructor(msg?: string); }
           throw new UnauthorizedException('nope');
@@ -193,6 +199,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: throw new ForbiddenException',
+        filename,
         code: `
           declare class ForbiddenException { constructor(msg?: string); }
           throw new ForbiddenException();
@@ -206,6 +213,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: throw new InternalServerErrorException',
+        filename,
         code: `
           declare class InternalServerErrorException { constructor(msg?: string); }
           throw new InternalServerErrorException('boom');
@@ -219,6 +227,7 @@ ruleTester.run(
       },
       {
         name: 'invalid: throw new RpcUnprocessableEntityException',
+        filename,
         code: `
           declare class RpcUnprocessableEntityException { constructor(msg?: string); }
           throw new RpcUnprocessableEntityException('bad payload');

@@ -1,7 +1,14 @@
 import type { TSESLint, TSESTree } from '@typescript-eslint/utils';
-import { AST_NODE_TYPES, ESLintUtils } from '@typescript-eslint/utils';
-import * as ts from 'typescript';
+import { AST_NODE_TYPES } from '@typescript-eslint/types';
+import {
+  type Checker,
+  type Symbol as TsSymbol,
+  SymbolFlags,
+  type Type,
+  type UnionOrIntersectionType,
+} from 'tsrs/sync';
 
+import { typesFor } from '../types/type-service.js';
 import { createRule } from '../utils/create-rule.js';
 
 type MessageIds = 'bannedMethod';
@@ -288,72 +295,71 @@ export const noTypeormFinderMethods = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create(context) {
-    const services = ESLintUtils.getParserServices(context);
-    const checker = services.program.getTypeChecker();
+    // TypeScript's checker for this file, asked for once the whole file has been walked.
+    let checker: Checker;
+    /**
+     * Whether each operator-named callee inside a banned call is TypeORM's,
+     * answered at Program:exit before the fixes are computed.
+     */
+    const typeormOperatorCallees = new Map<TSESTree.Node, boolean>();
 
     // -----------------------------------------------------------------------
     // typeorm symbol resolution
     // -----------------------------------------------------------------------
 
-    function symbolIsFromTypeorm(symbol: ts.Symbol | undefined): boolean {
+    function symbolIsFromTypeorm(symbol: TsSymbol | undefined): boolean {
       if (!symbol) {
         return false;
       }
-      const visited = new Set<ts.Symbol>();
-      const stack: ts.Symbol[] = [symbol];
+      const visited = new Set<number>();
+      const stack: TsSymbol[] = [symbol];
       while (stack.length > 0) {
         const current = stack.pop();
-        if (!current || visited.has(current)) {
+        if (!current || visited.has(current.id)) {
           continue;
         }
-        visited.add(current);
-        const declarations = current.getDeclarations() ?? [];
-        for (const decl of declarations) {
-          const fileName = decl.getSourceFile().fileName;
-          if (
-            fileName.includes('/typeorm/') ||
-            fileName.includes('\\typeorm\\')
-          ) {
-            return true;
-          }
+        visited.add(current.id);
+        if (
+          current.declarations.some((decl) =>
+            /[\\/]typeorm[\\/]/.test(decl.path),
+          )
+        ) {
+          return true;
         }
         // Follow aliases (import bindings, re-exports) to the original symbol.
-        if ((current.flags & ts.SymbolFlags.Alias) !== 0) {
-          try {
-            const aliased = checker.getAliasedSymbol(current);
-            if (aliased && aliased !== current) {
-              stack.push(aliased);
-            }
-          } catch {
-            // ignore — getAliasedSymbol can throw on unresolved aliases
+        if ((current.flags & SymbolFlags.Alias) !== 0) {
+          const aliased = checker.getAliasedSymbol(current);
+          if (aliased.id !== current.id) {
+            stack.push(aliased);
           }
         }
       }
       return false;
     }
 
-    function resolveReceiverName(type: ts.Type): string | null {
-      const seen = new Set<ts.Type>();
-      const stack: Array<{ type: ts.Type; depth: number }> = [
-        { type, depth: 0 },
-      ];
+    function resolveReceiverName(type: Type): string | null {
+      const seen = new Set<number>();
+      const stack: Array<{ type: Type; depth: number }> = [{ type, depth: 0 }];
       while (stack.length > 0) {
         const current = stack.pop();
-        if (!current || seen.has(current.type)) {
+        if (!current || seen.has(current.type.id)) {
           continue;
         }
-        seen.add(current.type);
+        seen.add(current.type.id);
         if (current.depth > MAX_HERITAGE_DEPTH) {
           continue;
         }
-        if (current.type.isUnion() || current.type.isIntersection()) {
-          for (const sub of current.type.types) {
+        if (current.type.isUnionType() || current.type.isIntersectionType()) {
+          for (const sub of (
+            current.type as UnionOrIntersectionType
+          ).getTypes()) {
             stack.push({ type: sub, depth: current.depth + 1 });
           }
           continue;
         }
-        const symbol = current.type.getSymbol() ?? current.type.aliasSymbol;
-        const name = symbol?.getName();
+        const symbol =
+          current.type.getSymbol() ?? current.type.getAliasSymbol();
+        const name = symbol?.name;
         if (
           name &&
           TYPEORM_RECEIVER_NAMES.has(name) &&
@@ -369,6 +375,12 @@ export const noTypeormFinderMethods = createRule<[], MessageIds>({
       return null;
     }
 
+    function isOperatorName(name: string): boolean {
+      return (
+        OPERATORS.has(name) || name === 'Not' || name === 'Raw' || name === 'Or'
+      );
+    }
+
     function callExpressionIsTypeormOperator(
       node: TSESTree.CallExpression,
     ): string | null {
@@ -376,17 +388,10 @@ export const noTypeormFinderMethods = createRule<[], MessageIds>({
         return null;
       }
       const name = node.callee.name;
-      if (
-        !OPERATORS.has(name) &&
-        name !== 'Not' &&
-        name !== 'Raw' &&
-        name !== 'Or'
-      ) {
+      if (!isOperatorName(name)) {
         return null;
       }
-      const tsNode = services.esTreeNodeToTSNodeMap.get(node.callee);
-      const symbol = checker.getSymbolAtLocation(tsNode);
-      if (!symbolIsFromTypeorm(symbol)) {
+      if (typeormOperatorCallees.get(node.callee) !== true) {
         return null;
       }
       return name;
@@ -1631,9 +1636,37 @@ export const noTypeormFinderMethods = createRule<[], MessageIds>({
       );
     }
 
+    // -----------------------------------------------------------------------
+    // collection and verification
+    // -----------------------------------------------------------------------
+
+    /** Calls of a banned method name, in traversal order; their receivers' types decide. */
+    const candidates: Array<{
+      node: TSESTree.CallExpression;
+      callee: TSESTree.MemberExpression;
+      method: string;
+    }> = [];
+    /**
+     * Callees named like a TypeORM operator (`In`, `Not`, ...); the fix
+     * translates one only when it is TypeORM's.
+     */
+    const operatorCallees: TSESTree.Identifier[] = [];
+
+    function contains(outer: TSESTree.Node, inner: TSESTree.Node): boolean {
+      return (
+        outer.range[0] <= inner.range[0] && inner.range[1] <= outer.range[1]
+      );
+    }
+
     return {
       CallExpression(node: TSESTree.CallExpression): void {
         const callee = node.callee;
+        if (callee.type === AST_NODE_TYPES.Identifier) {
+          if (isOperatorName(callee.name)) {
+            operatorCallees.push(callee);
+          }
+          return;
+        }
         if (
           callee.type !== AST_NODE_TYPES.MemberExpression ||
           callee.computed ||
@@ -1645,28 +1678,62 @@ export const noTypeormFinderMethods = createRule<[], MessageIds>({
         if (!BANNED_METHODS.has(method)) {
           return;
         }
-        const receiverTsNode = services.esTreeNodeToTSNodeMap.get(
-          callee.object,
-        );
-        const receiverType = checker.getTypeAtLocation(receiverTsNode);
-        const receiverName = resolveReceiverName(receiverType);
-        if (!receiverName) {
+        candidates.push({ node, callee, method });
+      },
+      // Types are asked for once per file, batched, when the file's calls are all known.
+      'Program:exit'(): void {
+        if (candidates.length === 0) {
           return;
         }
+        const types = typesFor(context);
+        if (types === undefined) {
+          return;
+        }
+        checker = types.checker;
 
-        const replacement = computeFix(node, callee, method, receiverName);
-
-        context.report({
-          node: callee.property,
-          messageId: 'bannedMethod',
-          data: { method, receiver: receiverName },
-          ...(replacement === null
-            ? {}
-            : {
-                fix: (fixer: TSESLint.RuleFixer): TSESLint.RuleFix =>
-                  fixer.replaceText(node, replacement),
-              }),
+        const receiverTypes = checker.getTypeAtLocation(
+          candidates.map(({ callee }) => types.nodeFor(callee.object)),
+        );
+        const banned = candidates.flatMap((candidate, index) => {
+          const receiverType = receiverTypes[index];
+          const receiverName =
+            receiverType === undefined
+              ? null
+              : resolveReceiverName(receiverType);
+          return receiverName === null ? [] : [{ ...candidate, receiverName }];
         });
+
+        // The fix translates an operator only when it is TypeORM's.
+        const operatorsInBanned = operatorCallees.filter((operator) =>
+          banned.some(({ node }) => contains(node, operator)),
+        );
+        if (operatorsInBanned.length > 0) {
+          const symbols = checker.getSymbolAtLocation(
+            operatorsInBanned.map((operator) => types.nodeFor(operator)),
+          );
+          operatorsInBanned.forEach((operator, index) => {
+            typeormOperatorCallees.set(
+              operator,
+              symbolIsFromTypeorm(symbols[index]),
+            );
+          });
+        }
+
+        for (const { node, callee, method, receiverName } of banned) {
+          const replacement = computeFix(node, callee, method, receiverName);
+
+          context.report({
+            node: callee.property,
+            messageId: 'bannedMethod',
+            data: { method, receiver: receiverName },
+            ...(replacement === null
+              ? {}
+              : {
+                  fix: (fixer: TSESLint.RuleFixer): TSESLint.RuleFix =>
+                    fixer.replaceText(node, replacement),
+                }),
+          });
+        }
       },
     };
   },

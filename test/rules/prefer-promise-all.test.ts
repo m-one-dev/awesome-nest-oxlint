@@ -1,17 +1,10 @@
 import '../setup.js';
 
-import { RuleTester } from '@typescript-eslint/rule-tester';
+import { RuleTester } from 'oxlint/plugins-dev';
 
 import { preferPromiseAll } from '../../src/rules/prefer-promise-all.js';
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    parserOptions: {
-      ecmaVersion: 2022,
-      sourceType: 'module',
-    },
-  },
-});
+const ruleTester = new RuleTester();
 
 ruleTester.run('prefer-promise-all', preferPromiseAll, {
   valid: [

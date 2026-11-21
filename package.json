@@ -1,7 +1,7 @@
 {
-  "name": "@m-one-dev/awesome-nest-eslint",
-  "version": "1.0.5",
-  "description": "Opinionated ESLint plugin with NestJS-aware rules used across m-one projects.",
+  "name": "@m-one-dev/awesome-nest-oxlint",
+  "version": "1.0.0",
+  "description": "Opinionated oxlint plugin with NestJS-aware rules used across m-one projects. Its type-aware rules get type information from tsrs.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -23,7 +23,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/m-one-dev/awesome-nest-eslint.git"
+    "url": "git+https://github.com/m-one-dev/awesome-nest-oxlint.git"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
@@ -39,26 +39,24 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "keywords": [
-    "eslint",
-    "eslintplugin",
-    "eslint-plugin",
+    "oxlint",
+    "oxlint-plugin",
     "nestjs",
     "typeorm",
     "m-one"
   ],
   "dependencies": {
-    "@typescript-eslint/utils": "^8.56.0"
+    "@typescript-eslint/types": "^8.63.0"
   },
   "peerDependencies": {
-    "@typescript-eslint/parser": ">=8",
-    "eslint": ">=9",
-    "typescript": ">=5.4"
+    "oxlint": ">=1.93.0",
+    "tsrs": "0.24.0-ts7.1.0-beta"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
-    "@typescript-eslint/parser": "^8.56.0",
-    "@typescript-eslint/rule-tester": "^8.56.0",
-    "eslint": "^10.0.0",
+    "@typescript-eslint/utils": "^8.56.0",
+    "oxlint": "1.93.0",
+    "tsrs": "0.24.0-ts7.1.0-beta",
     "typescript": "^5.9.3",
     "vitest": "^2.1.0"
   },

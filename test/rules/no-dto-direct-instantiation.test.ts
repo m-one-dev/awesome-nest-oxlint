@@ -1,26 +1,18 @@
 import * as path from 'node:path';
-import { RuleTester } from '@typescript-eslint/rule-tester';
+import { RuleTester } from 'oxlint/plugins-dev';
 
 import { noDtoDirectInstantiation } from '../../src/rules/no-dto-direct-instantiation.js';
 
 const fixturesDir = path.resolve(import.meta.dirname, '..', 'fixtures');
+const filename = path.join(fixturesDir, 'no-dto-direct-instantiation.ts');
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    parserOptions: {
-      projectService: {
-        allowDefaultProject: ['*.ts', '*.tsx'],
-        defaultProject: 'tsconfig.json',
-      },
-      tsconfigRootDir: fixturesDir,
-    },
-  },
-});
+const ruleTester = new RuleTester();
 
 ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
   valid: [
     {
       name: 'valid: SomeDto.create(...) call',
+      filename,
       code: `
         declare const SomeDto: { create: (data: any) => any };
         const dto = SomeDto.create({ foo: 'bar' });
@@ -28,6 +20,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'valid: entity.toDto() call',
+      filename,
       code: `
         declare const entity: { toDto: () => any };
         const dto = entity.toDto();
@@ -35,6 +28,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'valid: entities.toDtos() call',
+      filename,
       code: `
         declare const entities: { toDtos: () => any[] };
         const dtos = entities.toDtos();
@@ -42,6 +36,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'valid: new on a class not ending in Dto',
+      filename,
       code: `
         class Foo {}
         const f = new Foo();
@@ -49,6 +44,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'valid: new SomeDto(...) inside its own static create method',
+      filename,
       code: `
         class FooDto {
           static create(data: { x: number }): FooDto {
@@ -59,6 +55,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'valid: plainToInstance with non-Dto target',
+      filename,
       code: `
         declare function plainToInstance<T>(cls: any, data: any): T;
         class Foo {}
@@ -67,6 +64,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'valid: plainToInstance(this, data) inside BaseDto.create',
+      filename,
       code: `
         declare function plainToInstance<T>(cls: any, data: any): T;
         class BaseDto {
@@ -81,6 +79,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
   invalid: [
     {
       name: 'invalid: new SomeDto({...}) → autofix to SomeDto.create({...})',
+      filename,
       code: `
         class FooDto {}
         const dto = new FooDto({ x: 1 });
@@ -95,6 +94,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'invalid: new SomeDto(entity) → no autofix, suggests toDto/create',
+      filename,
       code: `
         class FooDto {}
         declare const entity: any;
@@ -104,6 +104,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'invalid: new SomeDto() with no args → no autofix',
+      filename,
       code: `
         class FooDto {}
         const dto = new FooDto();
@@ -112,6 +113,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'invalid: plainToInstance(SomeDto, data) → autofix to SomeDto.create(data)',
+      filename,
       code: `
         declare function plainToInstance<T>(cls: any, data: any): T;
         class FooDto {}
@@ -128,6 +130,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'invalid: UtilsProvider.plainToInstance(SomeDto, data) → autofix',
+      filename,
       code: `
         const UtilsProvider = { plainToInstance<T>(cls: any, data: any): T { return data; } };
         class FooDto {}
@@ -144,6 +147,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'invalid: plainToInstance(SomeDto, data, options) → no autofix (3rd arg present)',
+      filename,
       code: `
         declare function plainToInstance<T>(cls: any, data: any, options?: any): T;
         class FooDto {}
@@ -154,6 +158,7 @@ ruleTester.run('no-dto-direct-instantiation', noDtoDirectInstantiation, {
     },
     {
       name: 'invalid: new SomeDto(...) inside a different class static create',
+      filename,
       code: `
         class BarDto {}
         class FooDto {

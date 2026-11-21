@@ -1,12 +1,16 @@
-import type { TSESTree } from '@typescript-eslint/utils';
+import type { TSESTree } from '@typescript-eslint/types';
+import { AST_NODE_TYPES } from '@typescript-eslint/types';
 import {
-  AST_NODE_TYPES,
-  ASTUtils,
-  ESLintUtils,
-} from '@typescript-eslint/utils';
-import * as ts from 'typescript';
+  type Checker,
+  type Symbol as TsSymbol,
+  SymbolFlags,
+  type Type,
+  type UnionOrIntersectionType,
+} from 'tsrs/sync';
 
+import { typesFor } from '../types/type-service.js';
 import { createRule } from '../utils/create-rule.js';
+import { findVariable } from '../utils/find-variable.js';
 
 type MessageIds =
   | 'useRawTerminal'
@@ -70,58 +74,47 @@ export const preferRawTerminalOnSelect = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create(context) {
-    const services = ESLintUtils.getParserServices(context);
-    const checker = services.program.getTypeChecker();
+    // TypeScript's checker for this file, asked for once the whole file has been walked.
+    let checker: Checker;
     const sourceCode = context.sourceCode;
 
-    function symbolIsFromTypeorm(symbol: ts.Symbol | undefined): boolean {
+    function symbolIsFromTypeorm(symbol: TsSymbol | undefined): boolean {
       if (!symbol) return false;
-      const visited = new Set<ts.Symbol>();
-      const stack: ts.Symbol[] = [symbol];
+      const visited = new Set<number>();
+      const stack: TsSymbol[] = [symbol];
       while (stack.length > 0) {
         const cur = stack.pop();
-        if (!cur || visited.has(cur)) continue;
-        visited.add(cur);
-        const declarations = cur.getDeclarations() ?? [];
-        for (const decl of declarations) {
-          const fileName = decl.getSourceFile().fileName;
-          if (
-            fileName.includes('/typeorm/') ||
-            fileName.includes('\\typeorm\\')
-          ) {
-            return true;
-          }
+        if (!cur || visited.has(cur.id)) continue;
+        visited.add(cur.id);
+        if (
+          cur.declarations.some((decl) => /[\\/]typeorm[\\/]/.test(decl.path))
+        ) {
+          return true;
         }
-        if ((cur.flags & ts.SymbolFlags.Alias) !== 0) {
-          try {
-            const aliased = checker.getAliasedSymbol(cur);
-            if (aliased && aliased !== cur) stack.push(aliased);
-          } catch {
-            // ignore unresolved aliases
-          }
+        if ((cur.flags & SymbolFlags.Alias) !== 0) {
+          const aliased = checker.getAliasedSymbol(cur);
+          if (aliased.id !== cur.id) stack.push(aliased);
         }
       }
       return false;
     }
 
-    function analyzeReceiverType(type: ts.Type): QbInfo {
-      const seen = new Set<ts.Type>();
-      const stack: Array<{ type: ts.Type; depth: number }> = [
-        { type, depth: 0 },
-      ];
+    function analyzeReceiverType(type: Type): QbInfo {
+      const seen = new Set<number>();
+      const stack: Array<{ type: Type; depth: number }> = [{ type, depth: 0 }];
       while (stack.length > 0) {
         const cur = stack.pop();
-        if (!cur || seen.has(cur.type)) continue;
-        seen.add(cur.type);
+        if (!cur || seen.has(cur.type.id)) continue;
+        seen.add(cur.type.id);
         if (cur.depth > MAX_HERITAGE_DEPTH) continue;
-        if (cur.type.isUnion() || cur.type.isIntersection()) {
-          for (const t of cur.type.types) {
+        if (cur.type.isUnionType() || cur.type.isIntersectionType()) {
+          for (const t of (cur.type as UnionOrIntersectionType).getTypes()) {
             stack.push({ type: t, depth: cur.depth + 1 });
           }
           continue;
         }
-        const symbol = cur.type.getSymbol() ?? cur.type.aliasSymbol;
-        const name = symbol?.getName();
+        const symbol = cur.type.getSymbol() ?? cur.type.getAliasSymbol();
+        const name = symbol?.name;
         if (name && QB_TYPE_NAMES.has(name) && symbolIsFromTypeorm(symbol)) {
           return { isQb: true };
         }
@@ -192,7 +185,7 @@ export const preferRawTerminalOnSelect = createRule<[], MessageIds>({
       beforeStart: number,
     ): boolean {
       const scope = sourceCode.getScope(identifier);
-      const variable = ASTUtils.findVariable(scope, identifier.name);
+      const variable = findVariable(scope, identifier.name);
       if (!variable) return false;
       for (const ref of variable.references) {
         const refNode = ref.identifier as TSESTree.Identifier;
@@ -212,6 +205,54 @@ export const preferRawTerminalOnSelect = createRule<[], MessageIds>({
       return false;
     }
 
+    /**
+     * A flagged terminal whose chain selects; `needsType` when only its
+     * receiver's type can say the builder is TypeORM's.
+     */
+    const candidates: Array<{
+      node: TSESTree.CallExpression;
+      callee: TSESTree.MemberExpression & { property: TSESTree.Identifier };
+      method: string;
+      needsType: boolean;
+    }> = [];
+
+    function report(
+      callee: TSESTree.MemberExpression & { property: TSESTree.Identifier },
+      method: string,
+    ): void {
+      if (RAW_TERMINALS.has(method)) {
+        context.report({
+          node: callee.property,
+          messageId: 'requireGeneric',
+          data: { method },
+          *fix(fixer) {
+            yield fixer.insertTextAfter(callee.property, '<{}>');
+          },
+        });
+        return;
+      }
+
+      if (SUGGEST_ONLY_TERMINALS.has(method)) {
+        context.report({
+          node: callee.property,
+          messageId: 'semanticTerminalNeedsManualRewrite',
+          data: { method },
+        });
+        return;
+      }
+
+      const rawMethod = SAFE_REWRITE_MAP.get(method);
+      if (!rawMethod) return;
+      context.report({
+        node: callee.property,
+        messageId: 'useRawTerminal',
+        data: { method, rawMethod },
+        *fix(fixer) {
+          yield fixer.replaceText(callee.property, `${rawMethod}<{}>`);
+        },
+      });
+    }
+
     return {
       CallExpression(node: TSESTree.CallExpression): void {
         const callee = node.callee;
@@ -225,12 +266,6 @@ export const preferRawTerminalOnSelect = createRule<[], MessageIds>({
         const method = callee.property.name;
         if (!ALL_FLAGGED_TERMINALS.has(method)) return;
 
-        const receiverTsNode = services.esTreeNodeToTSNodeMap.get(
-          callee.object,
-        );
-        const receiverType = checker.getTypeAtLocation(receiverTsNode);
-        const qbInfo = analyzeReceiverType(receiverType);
-
         const chain = analyzeChain(node);
         let hasSelect = chain.hasSelect;
         if (!hasSelect && chain.rootIdentifier) {
@@ -239,43 +274,51 @@ export const preferRawTerminalOnSelect = createRule<[], MessageIds>({
             node.range[0],
           );
         }
-
-        const isQb = qbInfo.isQb || chain.hasCreateQueryBuilder;
-        if (!isQb) return;
         if (!hasSelect) return;
+        // A raw terminal with its generic is already what the rule asks for.
+        if (RAW_TERMINALS.has(method) && node.typeArguments) return;
 
-        if (RAW_TERMINALS.has(method)) {
-          if (node.typeArguments) return;
-          context.report({
-            node: callee.property,
-            messageId: 'requireGeneric',
-            data: { method },
-            *fix(fixer) {
-              yield fixer.insertTextAfter(callee.property, '<{}>');
-            },
-          });
-          return;
-        }
-
-        if (SUGGEST_ONLY_TERMINALS.has(method)) {
-          context.report({
-            node: callee.property,
-            messageId: 'semanticTerminalNeedsManualRewrite',
-            data: { method },
-          });
-          return;
-        }
-
-        const rawMethod = SAFE_REWRITE_MAP.get(method);
-        if (!rawMethod) return;
-        context.report({
-          node: callee.property,
-          messageId: 'useRawTerminal',
-          data: { method, rawMethod },
-          *fix(fixer) {
-            yield fixer.replaceText(callee.property, `${rawMethod}<{}>`);
+        candidates.push({
+          node,
+          callee: callee as TSESTree.MemberExpression & {
+            property: TSESTree.Identifier;
           },
+          method,
+          // A chain rooted in createQueryBuilder is a builder whatever its type says.
+          needsType: !chain.hasCreateQueryBuilder,
         });
+      },
+      // Types are asked for once per file, in one request, when the file's terminals are all known.
+      'Program:exit'(): void {
+        if (candidates.length === 0) return;
+        const types = typesFor(context);
+        if (types === undefined) return;
+        checker = types.checker;
+
+        const typed = candidates.filter(({ needsType }) => needsType);
+        const receiverTypes =
+          typed.length === 0
+            ? []
+            : checker.getTypeAtLocation(
+                typed.map(({ callee }) => types.nodeFor(callee.object)),
+              );
+        const builders = new Set(
+          typed
+            .filter((_, index) => {
+              const receiverType = receiverTypes[index];
+              return (
+                receiverType !== undefined &&
+                analyzeReceiverType(receiverType).isQb
+              );
+            })
+            .map(({ node }) => node),
+        );
+
+        for (const { node, callee, method, needsType } of candidates) {
+          if (!needsType || builders.has(node)) {
+            report(callee, method);
+          }
+        }
       },
     };
   },

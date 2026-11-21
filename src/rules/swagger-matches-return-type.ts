@@ -1,7 +1,15 @@
-import type { TSESTree } from '@typescript-eslint/utils';
-import { AST_NODE_TYPES, ESLintUtils } from '@typescript-eslint/utils';
-import * as ts from 'typescript';
+import type { TSESTree } from '@typescript-eslint/types';
+import { AST_NODE_TYPES } from '@typescript-eslint/types';
+import {
+  type Checker,
+  type Symbol as TsSymbol,
+  SymbolFlags,
+  type Type,
+  TypeFlags,
+  type UnionOrIntersectionType,
+} from 'tsrs/sync';
 
+import { typesFor } from '../types/type-service.js';
 import { createRule } from '../utils/create-rule.js';
 
 type MessageIds = 'slotMismatch';
@@ -62,20 +70,20 @@ const SUCCESS_STATUS_NUMBERS: ReadonlySet<number> = new Set([
 ]);
 
 const SKIPPED_TYPE_FLAGS =
-  ts.TypeFlags.Undefined |
-  ts.TypeFlags.Null |
-  ts.TypeFlags.Void |
-  ts.TypeFlags.Never |
-  ts.TypeFlags.Any |
-  ts.TypeFlags.Unknown |
-  ts.TypeFlags.String |
-  ts.TypeFlags.Number |
-  ts.TypeFlags.Boolean |
-  ts.TypeFlags.BigInt |
-  ts.TypeFlags.ESSymbol |
-  ts.TypeFlags.StringLiteral |
-  ts.TypeFlags.NumberLiteral |
-  ts.TypeFlags.BooleanLiteral;
+  TypeFlags.Undefined |
+  TypeFlags.Null |
+  TypeFlags.Void |
+  TypeFlags.Never |
+  TypeFlags.Any |
+  TypeFlags.Unknown |
+  TypeFlags.String |
+  TypeFlags.Number |
+  TypeFlags.Boolean |
+  TypeFlags.BigInt |
+  TypeFlags.ESSymbol |
+  TypeFlags.StringLiteral |
+  TypeFlags.NumberLiteral |
+  TypeFlags.BooleanLiteral;
 
 interface Shape {
   dtoName: string;
@@ -160,8 +168,11 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
         : [...DEFAULT_PAGE_WRAPPERS],
     );
 
-    const services = ESLintUtils.getParserServices(context);
-    const checker = services.program.getTypeChecker();
+    // TypeScript's view of this file, asked for once the whole file has been walked.
+    let checker: Checker;
+    // What tsrs answered, per node, for the type and symbol queries the endpoints need.
+    const typeOfNode = new Map<TSESTree.Node, Type>();
+    const symbolOfNode = new Map<TSESTree.Node, TsSymbol | undefined>();
 
     function matchesSuffix(name: string): boolean {
       return suffixes.some((suffix) => name.endsWith(suffix));
@@ -205,23 +216,21 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
       );
     }
 
-    function resolveSymbol(symbol: ts.Symbol): ts.Symbol {
-      if (symbol.flags & ts.SymbolFlags.Alias) {
+    function resolveSymbol(symbol: TsSymbol): TsSymbol {
+      if ((symbol.flags & SymbolFlags.Alias) !== 0) {
         return checker.getAliasedSymbol(symbol);
       }
       return symbol;
     }
 
-    function stripNullish(type: ts.Type): ts.Type | null {
-      if (!type.isUnion()) {
+    function stripNullish(type: Type): Type | null {
+      if (!type.isUnionType()) {
         return type;
       }
-      const nonNullish = type.types.filter(
+      const nonNullish = (type as UnionOrIntersectionType).getTypes().filter(
         (t) =>
-          !(
-            t.flags &
-            (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)
-          ),
+          (t.flags & (TypeFlags.Null | TypeFlags.Undefined | TypeFlags.Void)) ===
+          0,
       );
       if (nonNullish.length === 0) {
         return null;
@@ -232,31 +241,32 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
       return null;
     }
 
-    function getTypeWrapperName(type: ts.Type): string | null {
-      const aliasName = type.aliasSymbol?.getName();
+    function getTypeWrapperName(type: Type): string | null {
+      const aliasName = type.getAliasSymbol()?.name;
       if (aliasName) {
         return aliasName;
       }
-      const typeRef = type as ts.TypeReference;
-      const target = typeRef.target;
-      if (target && target !== type) {
-        return target.getSymbol()?.getName() ?? null;
+      if (type.isTypeReference()) {
+        const target = type.getTarget();
+        if (target.id !== type.id) {
+          return target.getSymbol()?.name ?? null;
+        }
       }
-      return type.getSymbol()?.getName() ?? null;
+      return type.getSymbol()?.name ?? null;
     }
 
-    function getTypeArgs(type: ts.Type): readonly ts.Type[] {
-      if (type.aliasTypeArguments && type.aliasTypeArguments.length > 0) {
-        return type.aliasTypeArguments;
+    function getTypeArgs(type: Type): readonly Type[] {
+      const aliasTypeArguments = type.getAliasTypeArguments();
+      if (aliasTypeArguments.length > 0) {
+        return aliasTypeArguments;
       }
-      const typeRef = type as ts.TypeReference;
-      if (typeRef.target) {
-        return checker.getTypeArguments(typeRef);
+      if (type.isTypeReference()) {
+        return checker.getTypeArguments(type);
       }
       return [];
     }
 
-    function classifyReturnType(type: ts.Type, depth = 0): Shape | null {
+    function classifyReturnType(type: Type, depth = 0): Shape | null {
       if (depth > 8) {
         return null;
       }
@@ -267,7 +277,7 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
       if (!stripped) {
         return null;
       }
-      if (stripped !== type) {
+      if (stripped.id !== type.id) {
         return classifyReturnType(stripped, depth + 1);
       }
       const wrapperName = getTypeWrapperName(type);
@@ -305,7 +315,7 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
       return { dtoName: inner, kind: 'single' };
     }
 
-    function extractInnerDtoName(type: ts.Type, depth: number): string | null {
+    function extractInnerDtoName(type: Type, depth: number): string | null {
       if (depth > 8) {
         return null;
       }
@@ -316,15 +326,15 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
       if (!stripped) {
         return null;
       }
-      if (stripped !== type) {
+      if (stripped.id !== type.id) {
         return extractInnerDtoName(stripped, depth + 1);
       }
-      const rawSymbol = type.aliasSymbol ?? type.getSymbol();
+      const rawSymbol = type.getAliasSymbol() ?? type.getSymbol();
       if (!rawSymbol) {
         return null;
       }
       const symbol = resolveSymbol(rawSymbol);
-      const name = symbol.getName();
+      const name = symbol.name;
       if (!name || !matchesSuffix(name)) {
         return null;
       }
@@ -442,8 +452,7 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
     function resolveIdentifierDtoName(
       ident: TSESTree.Identifier,
     ): string | null {
-      const tsNode = services.esTreeNodeToTSNodeMap.get(ident);
-      const symbolAtLocation = checker.getSymbolAtLocation(tsNode);
+      const symbolAtLocation = symbolOfNode.get(ident);
       if (!symbolAtLocation) {
         if (matchesSuffix(ident.name)) {
           return ident.name;
@@ -451,7 +460,7 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
         return null;
       }
       const symbol = resolveSymbol(symbolAtLocation);
-      const name = symbol.getName();
+      const name = symbol.name;
       if (!name || !matchesSuffix(name)) {
         return null;
       }
@@ -461,9 +470,7 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
     function resolveTypeNodeDtoName(
       typeNode: TSESTree.TypeNode,
     ): string | null {
-      const tsNode = services.esTreeNodeToTSNodeMap.get(typeNode);
-      const type = checker.getTypeAtLocation(tsNode);
-      return extractInnerDtoName(type, 0);
+      return extractInnerDtoName(typeOfNode.get(typeNode)!, 0);
     }
 
     interface SwaggerCheckTarget {
@@ -544,16 +551,68 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
       };
     }
 
+    /**
+     * The nodes `classifyDecoratorTypeNode` reads types or symbols of, so they can be
+     * asked for in one request per file.
+     */
+    function collectDecoratorQueries(
+      typeValue: TSESTree.Node,
+      identifiers: TSESTree.Identifier[],
+      typeNodes: TSESTree.TypeNode[],
+    ): void {
+      if (typeValue.type === AST_NODE_TYPES.Identifier) {
+        identifiers.push(typeValue);
+        return;
+      }
+      if (typeValue.type === AST_NODE_TYPES.ArrayExpression) {
+        const first = typeValue.elements[0];
+        if (first?.type === AST_NODE_TYPES.Identifier) {
+          identifiers.push(first);
+        }
+        return;
+      }
+      if (
+        typeValue.type === AST_NODE_TYPES.TSInstantiationExpression &&
+        typeValue.expression.type === AST_NODE_TYPES.Identifier
+      ) {
+        const typeArg = typeValue.typeArguments.params[0];
+        if (typeArg) {
+          typeNodes.push(typeArg);
+        }
+      }
+    }
+
+    /** The `type:` value of each decorator `getSwaggerTarget` would classify. */
+    function swaggerTypeValues(method: TSESTree.MethodDefinition): TSESTree.Node[] {
+      const values: TSESTree.Node[] = [];
+      for (const decorator of method.decorators ?? []) {
+        const name = getDecoratorName(decorator);
+        const expr = decorator.expression;
+        if (!name || expr.type !== AST_NODE_TYPES.CallExpression) {
+          continue;
+        }
+        const optionsArg = expr.arguments[0];
+        if (optionsArg?.type !== AST_NODE_TYPES.ObjectExpression) {
+          continue;
+        }
+        if (!NAMED_DECORATOR_META[name] && name !== 'ApiResponse') {
+          continue;
+        }
+        const typeProp = findObjectProperty(optionsArg, 'type');
+        if (typeProp) {
+          values.push(typeProp.value as TSESTree.Node);
+        }
+      }
+      return values;
+    }
+
     function checkEndpoint(method: TSESTree.MethodDefinition): void {
       const fn = method.value;
       const returnType = fn.returnType;
       if (!returnType) {
         return;
       }
-      const tsReturnNode = services.esTreeNodeToTSNodeMap.get(
-        returnType.typeAnnotation,
-      );
-      const returnTsType = checker.getTypeAtLocation(tsReturnNode);
+      const returnTsType = typeOfNode.get(returnType.typeAnnotation)!;
       const returnShape = classifyReturnType(returnTsType);
       if (!returnShape) {
         return;
@@ -579,6 +638,8 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
       }
     }
 
+    const endpoints: TSESTree.MethodDefinition[] = [];
+
     function visitController(
       classNode: TSESTree.ClassDeclaration | TSESTree.ClassExpression,
     ): void {
@@ -589,7 +650,9 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
         if (!hasAnyDecorator(member.decorators, HTTP_METHOD_DECORATORS)) {
           continue;
         }
-        checkEndpoint(member);
+        if (member.value.returnType) {
+          endpoints.push(member);
+        }
       }
     }
 
@@ -605,6 +668,42 @@ export const swaggerMatchesReturnType = createRule<[Options], MessageIds>({
           return;
         }
         visitController(node);
+      },
+      // Types are asked for once per file, in one request per kind, when every endpoint is known.
+      'Program:exit'(): void {
+        if (endpoints.length === 0) {
+          return;
+        }
+
+        const types = typesFor(context);
+
+        if (types === undefined) {
+          return;
+        }
+
+        checker = types.checker;
+
+        const typeNodes: TSESTree.TypeNode[] = [];
+        const identifiers: TSESTree.Identifier[] = [];
+
+        for (const method of endpoints) {
+          typeNodes.push(method.value.returnType!.typeAnnotation);
+          for (const typeValue of swaggerTypeValues(method)) {
+            collectDecoratorQueries(typeValue, identifiers, typeNodes);
+          }
+        }
+
+        const foundTypes = checker.getTypeAtLocation(typeNodes.map((node) => types.nodeFor(node)));
+        typeNodes.forEach((node, index) => typeOfNode.set(node, foundTypes[index]!));
+
+        if (identifiers.length > 0) {
+          const foundSymbols = checker.getSymbolAtLocation(identifiers.map((node) => types.nodeFor(node)));
+          identifiers.forEach((node, index) => symbolOfNode.set(node, foundSymbols[index]));
+        }
+
+        for (const method of endpoints) {
+          checkEndpoint(method);
+        }
       },
     };
   },

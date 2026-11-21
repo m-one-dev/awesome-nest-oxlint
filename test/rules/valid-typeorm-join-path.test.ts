@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { RuleTester } from '@typescript-eslint/rule-tester';
+import { RuleTester } from 'oxlint/plugins-dev';
 
 import { validTypeormJoinPath } from '../../src/rules/valid-typeorm-join-path.js';
 
@@ -9,17 +9,7 @@ const fixturesDir = path.resolve(import.meta.dirname, '..', 'fixtures');
 // lets the inline stub below stand in for the real class.
 const testFilename = path.join(fixturesDir, 'typeorm', 'in-test.ts');
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    parserOptions: {
-      projectService: {
-        allowDefaultProject: ['*.ts', '*.tsx', 'typeorm/*.ts'],
-        defaultProject: 'tsconfig.json',
-      },
-      tsconfigRootDir: fixturesDir,
-    },
-  },
-});
+const ruleTester = new RuleTester();
 
 const preamble = `
   class SelectQueryBuilder<T> {

@@ -1,6 +1,7 @@
 import { dtoDecoratorOptionalityMustMatchType } from './dto-decorator-optionality-must-match-type.js';
 import { dtoMustExtendAbstractOrBase } from './dto-must-extend-abstract-or-base.js';
 import { maxTypeormJoins } from './max-typeorm-joins.js';
+import { namingConvention } from './naming-convention.js';
 import { noApiPropertyDecorator } from './no-api-property-decorator.js';
 import { noBuiltinExceptionInstantiation } from './no-builtin-exception-instantiation.js';
 import { noDoubleCastLaundering } from './no-double-cast-laundering.js';
@@ -8,7 +9,6 @@ import { noDtoDirectInstantiation } from './no-dto-direct-instantiation.js';
 import { noDuplicateModuleEntries } from './no-duplicate-module-entries.js';
 import { noImplicitEnumToString } from './no-implicit-enum-to-string.js';
 import { noTypeormFinderMethods } from './no-typeorm-finder-methods.js';
-import { noUnusedInjectable } from './no-unused-injectable.js';
 import { payloadTypeSuffix } from './payload-type-suffix.js';
 import { preferPromiseAll } from './prefer-promise-all.js';
 import { preferRawTerminalOnSelect } from './prefer-raw-terminal-on-select.js';
@@ -26,6 +26,7 @@ export const rules = {
     dtoDecoratorOptionalityMustMatchType,
   'dto-must-extend-abstract-or-base': dtoMustExtendAbstractOrBase,
   'max-typeorm-joins': maxTypeormJoins,
+  'naming-convention': namingConvention,
   'no-api-property-decorator': noApiPropertyDecorator,
   'no-builtin-exception-instantiation': noBuiltinExceptionInstantiation,
   'no-double-cast-laundering': noDoubleCastLaundering,
@@ -33,7 +34,6 @@ export const rules = {
   'no-duplicate-module-entries': noDuplicateModuleEntries,
   'no-implicit-enum-to-string': noImplicitEnumToString,
   'no-typeorm-finder-methods': noTypeormFinderMethods,
-  'no-unused-injectable': noUnusedInjectable,
   'payload-type-suffix': payloadTypeSuffix,
   'prefer-promise-all': preferPromiseAll,
   'prefer-raw-terminal-on-select': preferRawTerminalOnSelect,
@@ -46,5 +46,3 @@ export const rules = {
   'uuid-field-naming': uuidFieldNaming,
   'valid-typeorm-join-path': validTypeormJoinPath,
 } as const;
-
-export type RuleName = keyof typeof rules;

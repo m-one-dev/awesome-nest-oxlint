@@ -1,7 +1,8 @@
-import type { TSESTree } from '@typescript-eslint/utils';
-import { AST_NODE_TYPES, ESLintUtils } from '@typescript-eslint/utils';
-import type * as ts from 'typescript';
+import type { TSESTree } from '@typescript-eslint/types';
+import { AST_NODE_TYPES } from '@typescript-eslint/types';
+import type { Expression } from 'tsrs/ast';
 
+import { typesFor } from '../types/type-service.js';
 import { createRule } from '../utils/create-rule.js';
 
 type MessageIds = 'requireAnchor' | 'asInsteadOfSatisfies';
@@ -33,8 +34,8 @@ export const requireObjectLiteralAnchor = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create(context) {
-    const services = ESLintUtils.getParserServices(context);
-    const checker = services.program.getTypeChecker();
+    // The literals whose contextual type is asked for once the whole file has been walked.
+    const unanchored: TSESTree.ObjectExpression[] = [];
 
     return {
       ObjectExpression(node) {
@@ -52,13 +53,27 @@ export const requireObjectLiteralAnchor = createRule<[], MessageIds>({
           return;
         }
 
-        const tsNode = services.esTreeNodeToTSNodeMap.get(
-          node,
-        ) as ts.Expression;
-        const contextual = checker.getContextualType(tsNode);
+        unanchored.push(node);
+      },
+      'Program:exit'(): void {
+        if (unanchored.length === 0) {
+          return;
+        }
 
-        if (contextual === undefined) {
-          context.report({ node, messageId: 'requireAnchor' });
+        const types = typesFor(context);
+
+        if (types === undefined) {
+          return;
+        }
+
+        for (const node of unanchored) {
+          const contextual = types.checker.getContextualType(
+            types.nodeFor(node) as Expression,
+          );
+
+          if (contextual === undefined) {
+            context.report({ node, messageId: 'requireAnchor' });
+          }
         }
       },
     };
