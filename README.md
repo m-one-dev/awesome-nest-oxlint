@@ -24,7 +24,7 @@ pnpm add -D @m-one-dev/awesome-nest-oxlint oxlint tsrs@0.24.0-ts7.1.0-beta
 }
 ```
 
-Each oxlint process opens one tsrs session. A file is checked in the first program that contains it: the nearest `tsconfig.json`, or a `tsconfig.typecheck.json` beside it, walking up to the package root. A file in no program gets no type-aware checks. When tsrs cannot answer (it will not start, it dies, or a query fails), the lint fails on that file with the cause.
+Each oxlint process opens one tsrs session. A file is checked in the first program that contains it: the nearest `tsconfig.json`, or a `tsconfig.typecheck.json` beside it, walking up to the package root. A file in no program gets no type-aware checks; a rule still reports there what the syntax alone decides. When tsrs cannot answer (it will not start, it dies, or a query fails), the lint fails on that file with the cause.
 
 ## Rules
 
@@ -49,7 +49,7 @@ Each oxlint process opens one tsrs session. A file is checked in the first progr
 | [`require-object-literal-anchor`](./docs/rules/require-object-literal-anchor.md) | yes | an object literal with no contextual type is anchored with `satisfies` |
 | [`require-use-dto-decorator`](./docs/rules/require-use-dto-decorator.md) | yes | entities carry `@UseDto` |
 | [`swagger-matches-return-type`](./docs/rules/) | yes | the success Swagger `type` matches the return type |
-| [`unique-endpoint-dtos`](./docs/rules/unique-endpoint-dtos.md) | yes | each endpoint slot (`@Body`, `@Query`, response) uses its own DTO across the program; the usage in the file whose path sorts first owns it |
+| [`unique-endpoint-dtos`](./docs/rules/unique-endpoint-dtos.md) | yes | each endpoint slot (`@Body`, `@Query`, response) uses its own DTO across the program; the usage in the file whose path sorts first (code-unit order) owns it |
 | [`uuid-field-naming`](./docs/rules/) | yes | `Uuid` names end with `Id`, `Uuid[]` with `Ids` |
 | [`valid-typeorm-join-path`](./docs/rules/valid-typeorm-join-path.md) | yes | a join names a real relation on an alias already in the chain |
 

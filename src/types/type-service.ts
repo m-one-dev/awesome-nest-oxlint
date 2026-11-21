@@ -33,6 +33,9 @@ interface ILintedFile {
 // (a package's tsconfig.json, and api-gateway's e2e/tsconfig.typecheck.json for its e2e suites).
 const PROGRAM_CONFIGS = ['tsconfig.json', 'tsconfig.typecheck.json'];
 
+/** A declaration file of any module kind; its declarations carry no decorators. */
+export const DECLARATION_FILE = /\.d\.[cm]?ts$/;
+
 /**
  * One tsrs session for this oxlint process (ADR 0105). It opens a project the first time a file of
  * it is linted, and gives tsrs the text oxlint lints whenever that differs from what tsrs holds:
@@ -84,12 +87,13 @@ class TypeService {
 
     return {
       checker: project.checker,
-      nodeFor: (node) => nodeAt(sourceFile, fileName, ...spanOf(node), node.type),
+      nodeFor: (node) => nodeAt(sourceFile, fileName, ...spanOf(sourceFile, node), node.type),
+      // Code-unit order, so which file comes first is the same on every machine; localeCompare follows the locale.
       programFiles: () =>
         project.program
           .getSourceFileNames()
-          .filter((name) => !name.endsWith('.d.ts') && !name.includes(`${path.sep}node_modules${path.sep}`))
-          .toSorted((a, b) => a.localeCompare(b)),
+          .filter((name) => !DECLARATION_FILE.test(name) && !name.includes(`${path.sep}node_modules${path.sep}`))
+          .toSorted(),
       sourceFileOf: (name) => {
         const other = project.program.getSourceFile(name);
 
@@ -168,12 +172,22 @@ class TypeService {
 
 /**
  * The span TypeScript gives the node. ESTree stretches an Identifier over its type annotation and
- * `?` (`adminId?: Uuid` in a parameter or declaration); TypeScript's Identifier is the name alone.
+ * `?` (`adminId?: Uuid` in a parameter or declaration); TypeScript's Identifier is the name alone,
+ * as written: the identifier token at its start, which an escape (`\u0075serId`) makes longer than
+ * the name.
  */
-function spanOf(node: ILintedNode): [number, number] {
+function spanOf(sourceFile: SourceFile, node: ILintedNode): [number, number] {
   const [start, end] = node.range;
 
-  return node.type === 'Identifier' ? [start, start + (node as unknown as { name: string }).name.length] : [start, end];
+  if (node.type !== 'Identifier') {
+    return [start, end];
+  }
+
+  const token = getTouchingToken(sourceFile, start);
+
+  return token.kind === SyntaxKind.Identifier && token.getStart(sourceFile) === start
+    ? [start, token.end]
+    : [start, start + (node as unknown as { name: string }).name.length];
 }
 
 /**

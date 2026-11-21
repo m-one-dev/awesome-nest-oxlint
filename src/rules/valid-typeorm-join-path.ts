@@ -3,7 +3,7 @@ import { AST_NODE_TYPES } from '@typescript-eslint/types';
 import { isCallExpression, isDecorator, isIdentifier, isPropertyAccessExpression } from 'tsrs/ast';
 import { type Checker, type Symbol as TsSymbol, SymbolFlags, type Type, TypeFlags, type TypeReference, type UnionOrIntersectionType } from 'tsrs/sync';
 
-import { type IFileTypes, typesFor } from '../types/type-service.js';
+import { DECLARATION_FILE, type IFileTypes, typesFor } from '../types/type-service.js';
 import { createRule } from '../utils/create-rule.js';
 import { findVariable } from '../utils/find-variable.js';
 
@@ -378,14 +378,14 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
     }
 
     /**
-     * True when the declaring file cannot carry decorators at all — a `.d.ts`
-     * strips them, so "no relation decorator" there means "unknown", never
+     * True when the declaring file cannot carry decorators at all — a
+     * declaration file (`.d.ts`, `.d.mts`, `.d.cts`) strips them, so "no relation decorator" there means "unknown", never
      * "not a relation".
      */
     function decoratorsAreObservable(symbol: TsSymbol): boolean {
       const declarations = symbol.declarations;
 
-      return declarations.length > 0 && declarations.every((decl) => !decl.path.endsWith('.d.ts'));
+      return declarations.length > 0 && declarations.every((decl) => !DECLARATION_FILE.test(decl.path));
     }
 
     // --- collection -------------------------------------------------------

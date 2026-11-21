@@ -6,6 +6,8 @@ import { preferRawTerminalOnSelect } from '../../src/rules/prefer-raw-terminal-o
 
 const fixturesDir = path.resolve(import.meta.dirname, '..', 'fixtures');
 const testFilename = path.join(fixturesDir, 'typeorm', 'in-test.ts');
+// Outside the fixtures tsconfig, and no other tsconfig below the package root holds it: a file of no program.
+const noProgramFilename = path.join(fixturesDir, '..', 'no-program.ts');
 
 const ruleTester = new RuleTester();
 
@@ -41,6 +43,17 @@ const preamble = `
 
 ruleTester.run('prefer-raw-terminal-on-select', preferRawTerminalOnSelect, {
   valid: [
+    {
+      name: 'in a file of no program, a chain only its receiver type makes a builder is not reported',
+      filename: noProgramFilename,
+      code: `${preamble}
+        class S {
+          async run(qb: SelectQueryBuilder<UserEntity>) {
+            return qb.select(['u.id']).getOne();
+          }
+        }
+      `,
+    },
     {
       name: 'no .select in chain → getOne is allowed',
       filename: testFilename,
@@ -150,6 +163,27 @@ ruleTester.run('prefer-raw-terminal-on-select', preferRawTerminalOnSelect, {
   ],
 
   invalid: [
+    {
+      name: 'in a file of no program, a chain rooted in createQueryBuilder is still reported',
+      filename: noProgramFilename,
+      code: `${preamble}
+class S {
+  constructor(private readonly restaurantSaveRepository: Repository<RestaurantSaveEntity>) {}
+  async run() {
+    return this.restaurantSaveRepository.createQueryBuilder('rs').select(['rs.restaurantId']).getOne();
+  }
+}
+`,
+      errors: [{ messageId: 'useRawTerminal', data: { method: 'getOne', rawMethod: 'getRawOne' } }],
+      output: `${preamble}
+class S {
+  constructor(private readonly restaurantSaveRepository: Repository<RestaurantSaveEntity>) {}
+  async run() {
+    return this.restaurantSaveRepository.createQueryBuilder('rs').select(['rs.restaurantId']).getRawOne<{}>();
+  }
+}
+`,
+    },
     {
       name: 'inline chain: getOne after .select → autofix to getRawOne<{}>',
       filename: testFilename,
