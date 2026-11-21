@@ -33,8 +33,16 @@ interface ILintedFile {
 // (a package's tsconfig.json, and api-gateway's e2e/tsconfig.typecheck.json for its e2e suites).
 const PROGRAM_CONFIGS = ['tsconfig.json', 'tsconfig.typecheck.json'];
 
-/** A declaration file of any module kind; its declarations carry no decorators. */
-export const DECLARATION_FILE = /\.d\.[cm]?ts$/;
+/**
+ * Whether a file is a declaration file, by TypeScript's rule: `.d.ts`, `.d.mts` or `.d.cts`, or a
+ * `.ts` file with `.d.` in its name (`styles.d.css.ts`, under `allowArbitraryExtensions`). Its
+ * declarations carry no decorators.
+ */
+export function isDeclarationFile(fileName: string): boolean {
+  const base = path.basename(fileName);
+
+  return /\.d\.[cm]?ts$/.test(base) || (base.endsWith('.ts') && base.includes('.d.'));
+}
 
 /**
  * One tsrs session for this oxlint process (ADR 0105). It opens a project the first time a file of
@@ -87,12 +95,12 @@ class TypeService {
 
     return {
       checker: project.checker,
-      nodeFor: (node) => nodeAt(sourceFile, fileName, ...spanOf(sourceFile, node), node.type),
+      nodeFor: (node) => nodeAt(sourceFile, fileName, node),
       // Code-unit order, so which file comes first is the same on every machine; localeCompare follows the locale.
       programFiles: () =>
         project.program
           .getSourceFileNames()
-          .filter((name) => !DECLARATION_FILE.test(name) && !name.includes(`${path.sep}node_modules${path.sep}`))
+          .filter((name) => !isDeclarationFile(name) && !name.includes(`${path.sep}node_modules${path.sep}`))
           .toSorted(),
       sourceFileOf: (name) => {
         const other = project.program.getSourceFile(name);
@@ -171,26 +179,6 @@ class TypeService {
 }
 
 /**
- * The span TypeScript gives the node. ESTree stretches an Identifier over its type annotation and
- * `?` (`adminId?: Uuid` in a parameter or declaration); TypeScript's Identifier is the name alone,
- * as written: the identifier token at its start, which an escape (`\u0075serId`) makes longer than
- * the name.
- */
-function spanOf(sourceFile: SourceFile, node: ILintedNode): [number, number] {
-  const [start, end] = node.range;
-
-  if (node.type !== 'Identifier') {
-    return [start, end];
-  }
-
-  const token = getTouchingToken(sourceFile, start);
-
-  return token.kind === SyntaxKind.Identifier && token.getStart(sourceFile) === start
-    ? [start, token.end]
-    : [start, start + (node as unknown as { name: string }).name.length];
-}
-
-/**
  * The TypeScript node kind an oxlint node of each ESTree type stands for, where TypeScript nests
  * several nodes over one span: a type annotation `Foo` is a TypeReference around an Identifier
  * with the same span, and asking for the Identifier's type in that position answers `any`.
@@ -208,24 +196,37 @@ const KIND_FOR: Readonly<Record<string, SyntaxKind>> = {
 };
 
 /**
- * The TypeScript node for an oxlint node: of the nodes spanning exactly `[start, end)`, the one of
- * the kind the oxlint node stands for (KIND_FOR), otherwise the innermost.
+ * The TypeScript node for an oxlint node. An Identifier is the identifier token at its start: ESTree
+ * stretches it over its type annotation and `?` (`adminId?: Uuid`), and the source can spell it longer
+ * than its name (`\u0075serId`), so its end says nothing. Any other node is, of the nodes spanning
+ * exactly `[start, end)`, the one of the kind it stands for (KIND_FOR), otherwise the innermost.
  */
-function nodeAt(sourceFile: SourceFile, fileName: string, start: number, end: number, esType: string): Node {
+function nodeAt(sourceFile: SourceFile, fileName: string, node: ILintedNode): Node {
+  const [start, end] = node.range;
+  const token = getTouchingToken(sourceFile, start);
+
+  if (node.type === 'Identifier') {
+    if (token.kind !== SyntaxKind.Identifier || token.getStart(sourceFile) !== start) {
+      throw new Error(`awesome-nest: no TypeScript identifier starts at ${start} in ${fileName}`);
+    }
+
+    return token;
+  }
+
   const exact: Node[] = [];
 
-  for (let node: Node | undefined = getTouchingToken(sourceFile, start); node !== undefined && node.kind !== SyntaxKind.SourceFile; node = node.parent) {
-    const nodeStart = node.getStart(sourceFile);
+  for (let current: Node | undefined = token; current !== undefined && current.kind !== SyntaxKind.SourceFile; current = current.parent) {
+    const currentStart = current.getStart(sourceFile);
 
-    if (nodeStart === start && node.end === end) {
-      exact.push(node);
-    } else if (nodeStart < start || node.end > end) {
+    if (currentStart === start && current.end === end) {
+      exact.push(current);
+    } else if (currentStart < start || current.end > end) {
       break;
     }
   }
 
-  const wanted = KIND_FOR[esType];
-  const found = (wanted === undefined ? undefined : exact.find((node) => node.kind === wanted)) ?? exact[0];
+  const wanted = KIND_FOR[node.type];
+  const found = (wanted === undefined ? undefined : exact.find((candidate) => candidate.kind === wanted)) ?? exact[0];
 
   if (found === undefined) {
     throw new Error(`awesome-nest: no TypeScript node spans ${start}-${end} in ${fileName}`);

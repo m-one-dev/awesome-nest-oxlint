@@ -24,7 +24,7 @@ pnpm add -D @m-one-dev/awesome-nest-oxlint oxlint tsrs@0.24.0-ts7.1.0-beta
 }
 ```
 
-Each oxlint process opens one tsrs session. A file is checked in the first program that contains it: the nearest `tsconfig.json`, or a `tsconfig.typecheck.json` beside it, walking up to the package root. A file in no program gets no type-aware checks; a rule still reports there what the syntax alone decides. When tsrs cannot answer (it will not start, it dies, or a query fails), the lint fails on that file with the cause.
+Each oxlint process opens one tsrs session. A file is checked in the first program that contains it: the nearest `tsconfig.json`, or a `tsconfig.typecheck.json` beside it, walking up to the package root. A file in no program gets no type-aware checks. Four of the type-aware rules still report there what the syntax alone decides: `dto-decorator-optionality-must-match-type` (the `*Optional` decorators against `?`), `dto-must-extend-abstract-or-base`, `payload-type-suffix` and `prefer-raw-terminal-on-select` (a chain rooted in `createQueryBuilder`); the others check nothing there. When tsrs cannot answer (it will not start, it dies, or a query fails), the lint fails on that file with the cause.
 
 ## Rules
 
