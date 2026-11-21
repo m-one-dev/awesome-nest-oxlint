@@ -1,12 +1,11 @@
 import type { TSESLint, TSESTree } from '@typescript-eslint/utils';
-import {
-  AST_NODE_TYPES,
-  ASTUtils,
-  ESLintUtils,
-} from '@typescript-eslint/utils';
-import * as ts from 'typescript';
+import { AST_NODE_TYPES } from '@typescript-eslint/types';
+import { isCallExpression, isDecorator, isIdentifier, isPropertyAccessExpression } from 'tsrs/ast';
+import { type Checker, type Symbol as TsSymbol, SymbolFlags, type Type, TypeFlags, type TypeReference, type UnionOrIntersectionType } from 'tsrs/sync';
 
+import { type IFileTypes, typesFor } from '../types/type-service.js';
 import { createRule } from '../utils/create-rule.js';
+import { findVariable } from '../utils/find-variable.js';
 
 type MessageIds =
   | 'unknownAlias'
@@ -56,7 +55,7 @@ interface IAliasEntry {
    * was a shape the rule does not resolve (raw table name, subquery). The alias
    * is still *known* — only its properties are unverifiable.
    */
-  entityType: ts.Type | null;
+  entityType: Type | null;
 }
 
 interface IJoinCall {
@@ -68,6 +67,8 @@ interface IJoinCall {
   aliasArgument: TSESTree.Node | undefined;
   /** `mapToProperty` — `*AndMap*` joins only. */
   mapArgument: TSESTree.Node | undefined;
+  /** The builder the join is called on; its type decides whether this is TypeORM at all. */
+  receiver: TSESTree.Node;
 }
 
 function literalString(node: TSESTree.Node | undefined): string | null {
@@ -111,48 +112,37 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
     },
     schema: [],
   },
-  defaultOptions: [],
   create(context): TSESLint.RuleListener {
-    const services = ESLintUtils.getParserServices(context);
-    const checker = services.program.getTypeChecker();
+    // TypeScript's view of this file, asked for once the whole file has been walked.
+    let types: IFileTypes;
+    let checker: Checker;
 
-    function symbolIsFromTypeorm(symbol: ts.Symbol | undefined): boolean {
+    function symbolIsFromTypeorm(symbol: TsSymbol | undefined): boolean {
       if (!symbol) {
         return false;
       }
 
-      const visited = new Set<ts.Symbol>();
-      const stack: ts.Symbol[] = [symbol];
+      const visited = new Set<number>();
+      const stack: TsSymbol[] = [symbol];
 
       while (stack.length > 0) {
         const current = stack.pop();
 
-        if (!current || visited.has(current)) {
+        if (!current || visited.has(current.id)) {
           continue;
         }
 
-        visited.add(current);
+        visited.add(current.id);
 
-        for (const decl of current.getDeclarations() ?? []) {
-          const fileName = decl.getSourceFile().fileName;
-
-          if (
-            fileName.includes('/typeorm/') ||
-            fileName.includes('\\typeorm\\')
-          ) {
-            return true;
-          }
+        if (current.declarations.some((decl) => /[\\/]typeorm[\\/]/.test(decl.path))) {
+          return true;
         }
 
-        if ((current.flags & ts.SymbolFlags.Alias) !== 0) {
-          try {
-            const aliased = checker.getAliasedSymbol(current);
+        if ((current.flags & SymbolFlags.Alias) !== 0) {
+          const aliased = checker.getAliasedSymbol(current);
 
-            if (aliased && aliased !== current) {
-              stack.push(aliased);
-            }
-          } catch {
-            // ignore — getAliasedSymbol can throw on unresolved aliases
+          if (aliased.id !== current.id) {
+            stack.push(aliased);
           }
         }
       }
@@ -165,44 +155,42 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
      * receiver is not a TypeORM builder at all (a look-alike with its own
      * `leftJoin` must not be linted).
      */
-    function queryBuilderEntity(type: ts.Type): ts.Type | null {
-      const seen = new Set<ts.Type>();
-      const stack: Array<{ type: ts.Type; depth: number }> = [
+    function queryBuilderEntity(type: Type): Type | null {
+      const seen = new Set<number>();
+      const stack: Array<{ type: Type; depth: number }> = [
         { type, depth: 0 },
       ];
 
       while (stack.length > 0) {
         const current = stack.pop();
 
-        if (!current || seen.has(current.type)) {
+        if (!current || seen.has(current.type.id)) {
           continue;
         }
 
-        seen.add(current.type);
+        seen.add(current.type.id);
 
         if (current.depth > MAX_HERITAGE_DEPTH) {
           continue;
         }
 
-        if (current.type.isUnion() || current.type.isIntersection()) {
-          for (const sub of current.type.types) {
+        if (current.type.isUnionType() || current.type.isIntersectionType()) {
+          for (const sub of (current.type as UnionOrIntersectionType).getTypes()) {
             stack.push({ type: sub, depth: current.depth + 1 });
           }
 
           continue;
         }
 
-        const symbol = current.type.getSymbol() ?? current.type.aliasSymbol;
-        const name = symbol?.getName();
+        const symbol = current.type.getSymbol();
+        const name = symbol?.name;
 
         if (
           name &&
           QUERY_BUILDER_TYPE_NAMES.has(name) &&
           symbolIsFromTypeorm(symbol)
         ) {
-          const args = checker.getTypeArguments(
-            current.type as ts.TypeReference,
-          );
+          const args = checker.getTypeArguments(current.type as TypeReference);
 
           return args[0] ?? null;
         }
@@ -215,10 +203,8 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
       return null;
     }
 
-    function typeAt(node: TSESTree.Node): ts.Type | null {
-      const tsNode = services.esTreeNodeToTSNodeMap.get(node);
-
-      return tsNode ? checker.getTypeAtLocation(tsNode) : null;
+    function typeAt(node: TSESTree.Node): Type {
+      return checker.getTypeAtLocation(types.nodeFor(node));
     }
 
     function unwrapChain(node: TSESTree.Node): TSESTree.Node {
@@ -287,7 +273,7 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
     function findOriginForIdentifier(
       node: TSESTree.Identifier,
     ): TSESTree.CallExpression | null {
-      const variable = ASTUtils.findVariable(
+      const variable = findVariable(
         context.sourceCode.getScope(node),
         node.name,
       );
@@ -334,14 +320,13 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
     }
 
     /** Strips `Array<>`, `Promise<>` and `| null | undefined` down to the entity. */
-    function unwrapRelationTarget(type: ts.Type): ts.Type | null {
-      let current: ts.Type | null = type;
+    function unwrapRelationTarget(type: Type): Type | null {
+      let current: Type | null = type;
 
       for (let depth = 0; current && depth < MAX_HERITAGE_DEPTH; depth++) {
-        if (current.isUnion()) {
-          const meaningful: ts.Type[] = current.types.filter(
-            (part) =>
-              (part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0,
+        if (current.isUnionType()) {
+          const meaningful: Type[] = (current as UnionOrIntersectionType).getTypes().filter(
+            (part) => (part.flags & (TypeFlags.Null | TypeFlags.Undefined)) === 0,
           );
 
           if (meaningful.length !== 1) {
@@ -352,13 +337,10 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
           continue;
         }
 
-        const symbolName = current.getSymbol()?.getName();
+        const symbolName = current.getSymbol()?.name;
 
-        if (
-          (symbolName === 'Array' || symbolName === 'Promise') &&
-          (current.flags & ts.TypeFlags.Object) !== 0
-        ) {
-          const args = checker.getTypeArguments(current as ts.TypeReference);
+        if ((symbolName === 'Array' || symbolName === 'Promise') && (current.flags & TypeFlags.Object) !== 0) {
+          const args: readonly Type[] = checker.getTypeArguments(current as TypeReference);
 
           current = args[0] ?? null;
           continue;
@@ -370,29 +352,21 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
       return null;
     }
 
-    function entityName(type: ts.Type): string {
-      return type.getSymbol()?.getName() ?? checker.typeToString(type);
+    function entityName(type: Type): string {
+      return type.getSymbol()?.name ?? checker.typeToString(type);
     }
 
-    function isRelationProperty(symbol: ts.Symbol): boolean {
-      for (const decl of symbol.getDeclarations() ?? []) {
-        if (!ts.canHaveDecorators(decl)) {
-          continue;
-        }
+    function isRelationProperty(symbol: TsSymbol): boolean {
+      for (const handle of symbol.declarations) {
+        const decl = handle.resolve() as { modifiers?: readonly Parameters<typeof isDecorator>[0][] };
 
-        for (const decorator of ts.getDecorators(decl) ?? []) {
-          const call = decorator.expression;
-
-          if (!ts.isCallExpression(call)) {
+        for (const decorator of decl.modifiers ?? []) {
+          if (!isDecorator(decorator) || !isCallExpression(decorator.expression)) {
             continue;
           }
 
-          const callee = call.expression;
-          const name = ts.isIdentifier(callee)
-            ? callee.text
-            : ts.isPropertyAccessExpression(callee)
-              ? callee.name.text
-              : undefined;
+          const callee = decorator.expression.expression;
+          const name = isIdentifier(callee) ? callee.text : isPropertyAccessExpression(callee) ? callee.name.text : undefined;
 
           if (name && RELATION_DECORATORS.has(name)) {
             return true;
@@ -408,18 +382,15 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
      * strips them, so "no relation decorator" there means "unknown", never
      * "not a relation".
      */
-    function decoratorsAreObservable(symbol: ts.Symbol): boolean {
-      const declarations = symbol.getDeclarations() ?? [];
+    function decoratorsAreObservable(symbol: TsSymbol): boolean {
+      const declarations = symbol.declarations;
 
-      return (
-        declarations.length > 0 &&
-        declarations.every((decl) => !decl.getSourceFile().isDeclarationFile)
-      );
+      return declarations.length > 0 && declarations.every((decl) => !decl.path.endsWith('.d.ts'));
     }
 
     // --- collection -------------------------------------------------------
 
-    const chains = new Map<TSESTree.CallExpression, IJoinCall[]>();
+    const candidates: Array<{ origin: TSESTree.CallExpression; join: IJoinCall }> = [];
 
     function collect(node: TSESTree.CallExpression): void {
       const callee = node.callee;
@@ -445,22 +416,17 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
         return;
       }
 
-      const receiverType = typeAt(callee.object);
-
-      if (!receiverType || !queryBuilderEntity(receiverType)) {
-        return;
-      }
-
-      const existing = chains.get(origin) ?? [];
-
-      existing.push({
-        node,
-        method,
-        pathArgument: isMap ? node.arguments[1] : node.arguments[0],
-        aliasArgument: isMap ? node.arguments[2] : node.arguments[1],
-        mapArgument: isMap ? node.arguments[0] : undefined,
+      candidates.push({
+        origin,
+        join: {
+          node,
+          method,
+          pathArgument: isMap ? node.arguments[1] : node.arguments[0],
+          aliasArgument: isMap ? node.arguments[2] : node.arguments[1],
+          mapArgument: isMap ? node.arguments[0] : undefined,
+          receiver: callee.object,
+        },
       });
-      chains.set(origin, existing);
     }
 
     // --- verification -----------------------------------------------------
@@ -473,7 +439,7 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
     function resolveJoinTarget(
       join: IJoinCall,
       aliases: Map<string, IAliasEntry>,
-    ): ts.Type | null {
+    ): Type | null {
       const path = literalString(join.pathArgument);
 
       if (path === null) {
@@ -481,8 +447,7 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
         const argument = join.pathArgument;
 
         if (argument && argument.type === AST_NODE_TYPES.Identifier) {
-          const type = typeAt(argument);
-          const construct = type?.getConstructSignatures() ?? [];
+          const construct = typeAt(argument).getConstructSignatures();
 
           return construct[0]?.getReturnType() ?? null;
         }
@@ -510,15 +475,11 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
         return null;
       }
 
-      const declaration = symbol.getDeclarations()?.[0];
-
-      if (!declaration) {
+      if (symbol.declarations.length === 0) {
         return null;
       }
 
-      return unwrapRelationTarget(
-        checker.getTypeOfSymbolAtLocation(symbol, declaration),
-      );
+      return unwrapRelationTarget(checker.getTypeOfSymbol(symbol));
     }
 
     function checkMapProperty(
@@ -623,8 +584,7 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
         return; // aliasless createQueryBuilder() — nothing anchors the table
       }
 
-      const originType = typeAt(origin);
-      const rootEntity = originType ? queryBuilderEntity(originType) : null;
+      const rootEntity = queryBuilderEntity(typeAt(origin));
 
       if (!rootEntity) {
         return;
@@ -655,6 +615,31 @@ export const validTypeormJoinPath = createRule<Options, MessageIds>({
     return {
       'CallExpression:exit': collect,
       'Program:exit'(): void {
+        if (candidates.length === 0) {
+          return;
+        }
+
+        const fileTypes = typesFor(context);
+
+        if (fileTypes === undefined) {
+          return;
+        }
+
+        types = fileTypes;
+        checker = fileTypes.checker;
+
+        // A look-alike with its own `leftJoin` must not be linted: keep the joins called on a TypeORM builder.
+        const receiverTypes = checker.getTypeAtLocation(candidates.map(({ join }) => types.nodeFor(join.receiver)));
+        const chains = new Map<TSESTree.CallExpression, IJoinCall[]>();
+
+        candidates.forEach(({ origin, join }, index) => {
+          const receiverType = receiverTypes[index];
+
+          if (receiverType !== undefined && queryBuilderEntity(receiverType)) {
+            chains.set(origin, [...(chains.get(origin) ?? []), join]);
+          }
+        });
+
         for (const [origin, joins] of chains) {
           verifyChain(origin, joins);
         }

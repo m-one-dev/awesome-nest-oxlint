@@ -1,23 +1,13 @@
 import * as path from 'node:path';
 
-import { RuleTester } from '@typescript-eslint/rule-tester';
+import { RuleTester } from 'oxlint/plugins-dev';
 
 import { noTypeormFinderMethods } from '../../src/rules/no-typeorm-finder-methods.js';
 
 const fixturesDir = path.resolve(import.meta.dirname, '..', 'fixtures');
 const testFilename = path.join(fixturesDir, 'typeorm', 'in-test.ts');
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    parserOptions: {
-      projectService: {
-        allowDefaultProject: ['*.ts', '*.tsx', 'typeorm/*.ts'],
-        defaultProject: 'tsconfig.json',
-      },
-      tsconfigRootDir: fixturesDir,
-    },
-  },
-});
+const ruleTester = new RuleTester();
 
 const preamble = `
   class QueryBuilder<T> {
@@ -2041,6 +2031,43 @@ class S {
         },
       ],
       output: null,
+    },
+    {
+      // No fix here enables another; the extra pass re-lints the fixed text,
+      // which is on no disk, and must still resolve the remaining call's receiver.
+      name: 'fixed text is re-linted: the error-only call is still found on the second pass',
+      filename: testFilename,
+      recursive: true,
+      code: `${preamble}
+class S {
+  constructor(private readonly userRepository: Repository<User>) {}
+  async byId(id: string) {
+    const user = await this.userRepository.findOneBy({ id });
+    return user ?? this.userRepository.findOneOrFail({ where: { id } });
+  }
+}
+`,
+      errors: [
+        {
+          messageId: 'bannedMethod',
+          data: { method: 'findOneBy', receiver: 'Repository' },
+        },
+        {
+          messageId: 'bannedMethod',
+          data: { method: 'findOneOrFail', receiver: 'Repository' },
+        },
+      ],
+      output: `${preamble}
+class S {
+  constructor(private readonly userRepository: Repository<User>) {}
+  async byId(id: string) {
+    const user = await this.userRepository.createQueryBuilder('user')
+      .where('user.id = :id', { id })
+      .getOne();
+    return user ?? this.userRepository.findOneOrFail({ where: { id } });
+  }
+}
+`,
     },
   ],
 });

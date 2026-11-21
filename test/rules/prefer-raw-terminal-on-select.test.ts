@@ -1,23 +1,13 @@
 import * as path from 'node:path';
 
-import { RuleTester } from '@typescript-eslint/rule-tester';
+import { RuleTester } from 'oxlint/plugins-dev';
 
 import { preferRawTerminalOnSelect } from '../../src/rules/prefer-raw-terminal-on-select.js';
 
 const fixturesDir = path.resolve(import.meta.dirname, '..', 'fixtures');
 const testFilename = path.join(fixturesDir, 'typeorm', 'in-test.ts');
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    parserOptions: {
-      projectService: {
-        allowDefaultProject: ['*.ts', '*.tsx', 'typeorm/*.ts'],
-        defaultProject: 'tsconfig.json',
-      },
-      tsconfigRootDir: fixturesDir,
-    },
-  },
-});
+const ruleTester = new RuleTester();
 
 const preamble = `
   class SelectQueryBuilder<T> {

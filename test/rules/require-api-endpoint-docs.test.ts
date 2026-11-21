@@ -1,21 +1,12 @@
 import * as path from 'node:path';
-import { RuleTester } from '@typescript-eslint/rule-tester';
+import { RuleTester } from 'oxlint/plugins-dev';
 
 import { requireApiEndpointDocs } from '../../src/rules/require-api-endpoint-docs.js';
 
 const fixturesDir = path.resolve(import.meta.dirname, '..', 'fixtures');
+const filename = path.join(fixturesDir, 'require-api-endpoint-docs.ts');
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    parserOptions: {
-      projectService: {
-        allowDefaultProject: ['*.ts', '*.tsx'],
-        defaultProject: 'tsconfig.json',
-      },
-      tsconfigRootDir: fixturesDir,
-    },
-  },
-});
+const ruleTester = new RuleTester();
 
 const preamble = `
   function Controller(_path?: string): ClassDecorator { return () => {}; }
@@ -44,6 +35,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
   valid: [
     {
       name: 'endpoint with @ApiOperation + @ApiOkResponse, both literal descriptions',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -56,6 +48,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'endpoint with @ApiPageResponse satisfies success-response requirement',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -68,6 +61,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'endpoint with @ApiCursorPageResponse satisfies success-response requirement',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -80,6 +74,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'template literal description without expressions is allowed',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -92,6 +87,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'NATS controller (MessagePattern) is ignored',
+      filename,
       code: `${preamble}
         @Controller()
         class FooNatsController {
@@ -102,6 +98,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'class without @Controller is ignored',
+      filename,
       code: `${preamble}
         @Injectable()
         class FooService {
@@ -112,6 +109,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'method without HTTP decorator is ignored',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -126,6 +124,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'multiple success-response decorators each with description',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -139,6 +138,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'requireOperationSummary on with summary present',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -152,6 +152,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'custom successResponseDecorators option',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -165,6 +166,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'success-response decorator without description is allowed',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -177,6 +179,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'success-response decorator with no options at all is allowed',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -189,6 +192,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'multiple success-response decorators, none with description, are allowed',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -205,6 +209,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
   invalid: [
     {
       name: 'missing @ApiOperation',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -217,6 +222,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'missing success-response decorator',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -229,6 +235,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'generic @ApiResponse does not satisfy by default',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -242,6 +249,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'error-only response does not satisfy success requirement',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -255,6 +263,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: '@ApiOperation missing description property',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -268,6 +277,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: '@ApiOperation called with no options at all',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -281,6 +291,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'description is empty string',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -294,6 +305,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'description is whitespace only',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -307,6 +319,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'description is identifier (non-literal)',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -320,6 +333,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'description is template literal with expression',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -333,6 +347,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'missing both @ApiOperation and success response — two reports',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {
@@ -347,6 +362,7 @@ ruleTester.run('require-api-endpoint-docs', requireApiEndpointDocs, {
     },
     {
       name: 'requireOperationSummary on but summary missing',
+      filename,
       code: `${preamble}
         @Controller('foo')
         class FooController {

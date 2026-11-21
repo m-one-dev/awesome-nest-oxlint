@@ -1,21 +1,12 @@
 import * as path from 'node:path';
-import { RuleTester } from '@typescript-eslint/rule-tester';
+import { RuleTester } from 'oxlint/plugins-dev';
 
 import { noImplicitEnumToString } from '../../src/rules/no-implicit-enum-to-string.js';
 
 const fixturesDir = path.resolve(import.meta.dirname, '..', 'fixtures');
+const filename = path.join(fixturesDir, 'enum-to-string.ts');
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    parserOptions: {
-      projectService: {
-        allowDefaultProject: ['*.ts', '*.tsx'],
-        defaultProject: 'tsconfig.json',
-      },
-      tsconfigRootDir: fixturesDir,
-    },
-  },
-});
+const ruleTester = new RuleTester();
 
 // Shared preamble fragments kept inline per-case so each snippet is a
 // self-contained, type-checkable module.
@@ -24,6 +15,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
   valid: [
     {
       name: 'valid: sink typed as the enum itself',
+      filename,
       code: `
         enum A { name = 'name' }
         function takesEnum(x: A) {}
@@ -32,6 +24,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: sink typed as unknown',
+      filename,
       code: `
         enum A { name = 'name' }
         function takesUnknown(x: unknown) {}
@@ -40,6 +33,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: sink typed as any',
+      filename,
       code: `
         enum A { name = 'name' }
         function takesAny(x: any) {}
@@ -48,6 +42,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: explicit String() conversion',
+      filename,
       code: `
         enum A { name = 'name' }
         function getName(x: string) {}
@@ -56,6 +51,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: template literal interpolation',
+      filename,
       code: `
         enum A { name = 'name' }
         function getName(x: string) {}
@@ -64,6 +60,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: explicit .toString()',
+      filename,
       code: `
         enum A { name = 'name' }
         function getName(x: string) {}
@@ -72,6 +69,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: plain string-literal union is not an enum',
+      filename,
       code: `
         type Plain = 'a' | 'b';
         function getName(x: string) {}
@@ -81,6 +79,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: numeric enum to a number sink',
+      filename,
       code: `
         enum N { a, b }
         function takesNum(x: number) {}
@@ -89,6 +88,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: equality comparison against a string is not a sink',
+      filename,
       code: `
         enum A { name = 'name' }
         declare const s: string;
@@ -97,6 +97,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: switch/case against a string is not a sink',
+      filename,
       code: `
         enum A { name = 'name' }
         declare const s: string;
@@ -105,6 +106,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: string concatenation is not a sink',
+      filename,
       code: `
         enum A { name = 'name' }
         declare const s: string;
@@ -113,6 +115,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: returning an enum member from an enum-typed function',
+      filename,
       code: `
         enum A { name = 'name' }
         function makeA(): A { return A.name; }
@@ -120,6 +123,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: enum value assigned to an enum-typed variable',
+      filename,
       code: `
         enum A { name = 'name' }
         const a: A = A.name;
@@ -127,6 +131,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'valid: passing a plain string variable',
+      filename,
       code: `
         function getName(x: string) {}
         declare const s: string;
@@ -138,6 +143,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
   invalid: [
     {
       name: 'invalid: call argument',
+      filename,
       code: `
         enum A { name = 'name' }
         function getName(x: string) {}
@@ -147,6 +153,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: method argument',
+      filename,
       code: `
         enum A { name = 'name' }
         class Svc { setName(x: string) {} }
@@ -157,6 +164,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: constructor argument',
+      filename,
       code: `
         enum A { name = 'name' }
         class Greeter { constructor(x: string) {} }
@@ -166,6 +174,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: decorator-factory argument',
+      filename,
       code: `
         enum A { name = 'name' }
         function Cls(x: string) { return (_t: unknown) => {}; }
@@ -176,6 +185,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: variable type annotation',
+      filename,
       code: `
         enum A { name = 'name' }
         const y: string = A.name;
@@ -184,6 +194,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: return position',
+      filename,
       code: `
         enum A { name = 'name' }
         function ret(): string { return A.name; }
@@ -192,6 +203,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: arrow expression-body return',
+      filename,
       code: `
         enum A { name = 'name' }
         const ret = (): string => A.name;
@@ -200,6 +212,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: assignment to a string variable',
+      filename,
       code: `
         enum A { name = 'name' }
         let s: string;
@@ -209,6 +222,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: object-literal property typed string',
+      filename,
       code: `
         enum A { name = 'name' }
         const obj: { k: string } = { k: A.name };
@@ -217,6 +231,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: array element typed string',
+      filename,
       code: `
         enum A { name = 'name' }
         const arr: string[] = [A.name];
@@ -225,6 +240,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: string | undefined sink',
+      filename,
       code: `
         enum A { name = 'name' }
         function takesOpt(x: string | undefined) {}
@@ -234,6 +250,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: default parameter value',
+      filename,
       code: `
         enum A { name = 'name' }
         function withDefault(x: string = A.name) {}
@@ -242,6 +259,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: ternary branch into a string sink',
+      filename,
       code: `
         enum A { name = 'name' }
         declare const cond: boolean;
@@ -251,6 +269,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: indirect variable holding an enum member',
+      filename,
       code: `
         enum A { name = 'name' }
         function getName(x: string) {}
@@ -261,6 +280,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: forwarded enum-typed parameter',
+      filename,
       code: `
         enum A { name = 'name' }
         function getName(x: string) {}
@@ -270,6 +290,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: string member of a mixed enum',
+      filename,
       code: `
         enum M { a = 1, b = 'b' }
         function getName(x: string) {}
@@ -281,6 +302,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: const enum member',
+      filename,
       code: `
         const enum C { x = 'x' }
         function getName(x: string) {}
@@ -290,6 +312,7 @@ ruleTester.run('no-implicit-enum-to-string', noImplicitEnumToString, {
     },
     {
       name: 'invalid: enum-returning call assigned to a string',
+      filename,
       code: `
         enum A { name = 'name' }
         function makeA(): A { return A.name; }

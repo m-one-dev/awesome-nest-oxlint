@@ -1,5 +1,5 @@
 import type { TSESLint, TSESTree } from '@typescript-eslint/utils';
-import { AST_NODE_TYPES } from '@typescript-eslint/utils';
+import { AST_NODE_TYPES } from '@typescript-eslint/types';
 
 import { createRule } from '../utils/create-rule.js';
 
@@ -87,7 +87,6 @@ export const noDuplicateModuleEntries = createRule<[], MessageIds>({
     schema: [],
     defaultOptions: [],
   },
-  defaultOptions: [],
   create(context): TSESLint.RuleListener {
     const { sourceCode } = context;
 

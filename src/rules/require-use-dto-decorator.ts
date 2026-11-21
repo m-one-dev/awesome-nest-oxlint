@@ -1,10 +1,13 @@
 import type { TSESLint, TSESTree } from '@typescript-eslint/utils';
-import { AST_NODE_TYPES, ESLintUtils } from '@typescript-eslint/utils';
-import * as ts from 'typescript';
+import { AST_NODE_TYPES } from '@typescript-eslint/types';
+import { SymbolFlags, type Type } from 'tsrs/sync';
 
+import { type IFileTypes, typesFor } from '../types/type-service.js';
 import { createRule } from '../utils/create-rule.js';
 
 type MessageIds = 'missingUseDto';
+
+type ClassNode = TSESTree.ClassDeclaration | TSESTree.ClassExpression;
 
 const ABSTRACT_ENTITY_NAMES: ReadonlySet<string> = new Set([
   'AbstractEntity',
@@ -39,6 +42,25 @@ function deriveDtoName(entityClassName: string): string {
   return `${entityClassName}Dto`;
 }
 
+/**
+ * The superclass expression TypeScript can name a symbol for: an identifier or
+ * a dotted name. Anything else (a mixin call) has no symbol, so it never
+ * reaches AbstractEntity.
+ */
+function namedSuperClass(node: ClassNode): TSESTree.Expression | null {
+  const superClass = node.superClass;
+
+  if (superClass?.type === AST_NODE_TYPES.Identifier) {
+    return superClass;
+  }
+
+  if (superClass?.type === AST_NODE_TYPES.MemberExpression && !superClass.computed) {
+    return superClass;
+  }
+
+  return null;
+}
+
 export const requireUseDtoDecorator = createRule<[], MessageIds>({
   name: 'require-use-dto-decorator',
   meta: {
@@ -56,25 +78,25 @@ export const requireUseDtoDecorator = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create(context) {
-    const services = ESLintUtils.getParserServices(context);
-    const checker = services.program.getTypeChecker();
     const sourceCode = context.sourceCode;
+    /** Concrete classes of this file with no @UseDto, in source order, with their superclass. */
+    const candidates: Array<{ node: ClassNode; id: TSESTree.Identifier; superClass: TSESTree.Expression }> = [];
 
-    function chainReachesAbstractEntity(startType: ts.Type): boolean {
-      const seen = new Set<ts.Type>();
-      const stack: Array<{ type: ts.Type; depth: number }> = [
+    function chainReachesAbstractEntity(startType: Type): boolean {
+      const seen = new Set<number>();
+      const stack: Array<{ type: Type; depth: number }> = [
         { type: startType, depth: 0 },
       ];
       while (stack.length > 0) {
         const current = stack.pop();
-        if (!current || seen.has(current.type)) {
+        if (!current || seen.has(current.type.id)) {
           continue;
         }
-        seen.add(current.type);
+        seen.add(current.type.id);
         if (current.depth > MAX_HERITAGE_DEPTH) {
           continue;
         }
-        const name = current.type.getSymbol()?.getName();
+        const name = current.type.getSymbol()?.name;
         if (name && ABSTRACT_ENTITY_NAMES.has(name)) {
           return true;
         }
@@ -86,66 +108,57 @@ export const requireUseDtoDecorator = createRule<[], MessageIds>({
       return false;
     }
 
-    function resolveHeritageType(
-      expr: ts.ExpressionWithTypeArguments,
-    ): ts.Type | undefined {
-      const symbol = checker.getSymbolAtLocation(expr.expression);
-      if (!symbol) {
-        return undefined;
-      }
-      const aliased =
-        symbol.flags & ts.SymbolFlags.Alias
-          ? checker.getAliasedSymbol(symbol)
-          : symbol;
-      return checker.getDeclaredTypeOfSymbol(aliased);
+    /** Whether each superclass reaches AbstractEntity, asked of TypeScript in one request. */
+    function reachesAbstractEntity(types: IFileTypes, superClasses: readonly TSESTree.Expression[]): boolean[] {
+      const { checker } = types;
+      const symbols = checker.getSymbolAtLocation(superClasses.map((node) => types.nodeFor(node)));
+      // Most entities share a base, so each superclass symbol is resolved once.
+      const bySymbol = new Map<number, boolean>();
+
+      return symbols.map((symbol) => {
+        if (!symbol) {
+          return false;
+        }
+        const aliased =
+          (symbol.flags & SymbolFlags.Alias) !== 0
+            ? checker.getAliasedSymbol(symbol)
+            : symbol;
+        let reaches = bySymbol.get(aliased.id);
+        if (reaches === undefined) {
+          reaches = chainReachesAbstractEntity(checker.getDeclaredTypeOfSymbol(aliased));
+          bySymbol.set(aliased.id, reaches);
+        }
+        return reaches;
+      });
     }
 
-    function check(
-      node: TSESTree.ClassDeclaration | TSESTree.ClassExpression,
-    ): void {
+    function check(node: ClassNode): void {
       if (!node.id) {
         return;
       }
-      const className = node.id.name;
-      if (ALLOWLISTED_NAMES.has(className)) {
+      if (ALLOWLISTED_NAMES.has(node.id.name)) {
         return;
       }
       if (node.abstract) {
         return;
       }
-
-      const tsNode = services.esTreeNodeToTSNodeMap.get(
-        node,
-      ) as ts.ClassLikeDeclaration;
-      const extendsClause = tsNode.heritageClauses?.find(
-        (hc) => hc.token === ts.SyntaxKind.ExtendsKeyword,
-      );
-      const baseExpressions = extendsClause?.types ?? [];
-
-      let extendsAbstractEntity = false;
-      for (const baseExpr of baseExpressions) {
-        const baseType = resolveHeritageType(baseExpr);
-        if (baseType && chainReachesAbstractEntity(baseType)) {
-          extendsAbstractEntity = true;
-          break;
-        }
-      }
-      if (!extendsAbstractEntity) {
+      const superClass = namedSuperClass(node);
+      if (!superClass) {
         return;
       }
+      if ((node.decorators ?? []).some((d) => getDecoratorName(d) === 'UseDto')) {
+        return;
+      }
+      candidates.push({ node, id: node.id, superClass });
+    }
 
+    function report(node: ClassNode, id: TSESTree.Identifier): void {
+      const className = id.name;
       const decorators = node.decorators ?? [];
-      const hasUseDto = decorators.some(
-        (d) => getDecoratorName(d) === 'UseDto',
-      );
-      if (hasUseDto) {
-        return;
-      }
-
       const dtoName = deriveDtoName(className);
 
       context.report({
-        node: node.id,
+        node: id,
         messageId: 'missingUseDto',
         data: { name: className, dto: dtoName },
         fix(fixer): TSESLint.RuleFix {
@@ -165,6 +178,26 @@ export const requireUseDtoDecorator = createRule<[], MessageIds>({
     return {
       [AST_NODE_TYPES.ClassDeclaration]: check,
       [AST_NODE_TYPES.ClassExpression]: check,
+      // Types are asked for once per file, when every class in it is known.
+      'Program:exit'(): void {
+        if (candidates.length === 0) {
+          return;
+        }
+
+        const types = typesFor(context);
+
+        if (types === undefined) {
+          return;
+        }
+
+        const reaches = reachesAbstractEntity(types, candidates.map(({ superClass }) => superClass));
+
+        candidates.forEach(({ node, id }, index) => {
+          if (reaches[index]) {
+            report(node, id);
+          }
+        });
+      },
     };
   },
 });

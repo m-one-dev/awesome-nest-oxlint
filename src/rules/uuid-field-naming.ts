@@ -1,7 +1,16 @@
-import type { TSESTree } from '@typescript-eslint/utils';
-import { AST_NODE_TYPES, ESLintUtils } from '@typescript-eslint/utils';
-import * as ts from 'typescript';
+import type { TSESTree } from '@typescript-eslint/types';
+import { AST_NODE_TYPES } from '@typescript-eslint/types';
+import type { Expression } from 'tsrs/ast';
+import {
+  type Checker,
+  type Symbol as TsSymbol,
+  type Type,
+  TypeFlags,
+  type TypeReference,
+  type UnionOrIntersectionType,
+} from 'tsrs/sync';
 
+import { typesFor } from '../types/type-service.js';
 import { createRule } from '../utils/create-rule.js';
 
 type MessageIds =
@@ -21,12 +30,35 @@ const SINGULAR_NAME_RE = /^id$|[a-z0-9]Id$/;
 const PLURAL_NAME_RE = /^ids$|[a-z0-9]Ids$/;
 
 const SKIPPED_TYPE_FLAGS =
-  ts.TypeFlags.Undefined |
-  ts.TypeFlags.Null |
-  ts.TypeFlags.Void |
-  ts.TypeFlags.Never;
+  TypeFlags.Undefined | TypeFlags.Null | TypeFlags.Void | TypeFlags.Never;
 
-const OPAQUE_TYPE_FLAGS = ts.TypeFlags.Any | ts.TypeFlags.Unknown;
+const OPAQUE_TYPE_FLAGS = TypeFlags.Any | TypeFlags.Unknown;
+
+type TypeKind = 'uuid' | 'uuid-array' | 'opaque' | 'other';
+
+/** A name checked against the type of `typeNode`. */
+interface INameCheck {
+  kind: 'name';
+  reportTarget: TSESTree.Node;
+  name: string;
+  /**
+   * Where the type is asked: the binding identifier, or the property itself.
+   * A property is asked rather than its type annotation, since tsrs types the
+   * name inside a type reference (`userId: Uuid`) as `any`; the two differ
+   * only by the `undefined` a `?` adds, which classification strips.
+   */
+  typeNode: TSESTree.Node;
+  /** A string-literal key (`'user-id'`): only the forward direction applies. */
+  literalKey: boolean;
+}
+
+/** An object-literal property, checked against the property its contextual type declares. */
+interface IObjectPropertyCheck {
+  kind: 'objectProperty';
+  key: TSESTree.Node;
+  name: string;
+  objectExpr: TSESTree.ObjectExpression;
+}
 
 export const uuidFieldNaming = createRule<[Options], MessageIds>({
   name: 'uuid-field-naming',
@@ -66,8 +98,8 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
     const allowPatterns = (rawOptions.allowNonUuidNames ?? []).map(
       (p) => new RegExp(p),
     );
-    const services = ESLintUtils.getParserServices(context);
-    const checker = services.program.getTypeChecker();
+    // TypeScript's checker for this file, asked for once the whole file has been walked.
+    let checker: Checker;
 
     function isAllowedNonUuid(name: string): boolean {
       return allowPatterns.some((re) => re.test(name));
@@ -81,20 +113,37 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
       return PLURAL_NAME_RE.test(name);
     }
 
-    function isPromiseType(type: ts.Type): boolean {
-      const symbol = type.aliasSymbol ?? type.getSymbol();
-      return symbol?.getName() === 'Promise';
+    function isPromiseType(type: Type): boolean {
+      const symbol = type.getAliasSymbol() ?? type.getSymbol();
+      return symbol?.name === 'Promise';
     }
 
-    function isReadonlyWrapper(type: ts.Type): ts.Type | null {
-      const aliasName = type.aliasSymbol?.getName();
-      if (aliasName === 'Readonly' && type.aliasTypeArguments?.[0]) {
-        return type.aliasTypeArguments[0];
+    function isReadonlyWrapper(type: Type): Type | null {
+      const aliasName = type.getAliasSymbol()?.name;
+      if (aliasName === 'Readonly') {
+        return type.getAliasTypeArguments()[0] ?? null;
       }
       return null;
     }
 
-    function typeHasUuidBrand(type: ts.Type, depth = 0): boolean {
+    // Every type is classified once per file: the same few types (`string`,
+    // `Uuid`) recur across nearly every declaration, and each question about a
+    // type is a request to tsrs.
+    const brandCache = new Map<number, boolean>();
+    const elementCache = new Map<number, Type | null>();
+    const kindCache = new Map<number, TypeKind>();
+
+    function typeHasUuidBrand(type: Type, depth = 0): boolean {
+      if (depth > 0) return typeHasUuidBrandWorker(type, depth);
+      let cached = brandCache.get(type.id);
+      if (cached === undefined) {
+        cached = typeHasUuidBrandWorker(type, depth);
+        brandCache.set(type.id, cached);
+      }
+      return cached;
+    }
+
+    function typeHasUuidBrandWorker(type: Type, depth: number): boolean {
       if (depth > 6) return false;
       if (type.flags & SKIPPED_TYPE_FLAGS) return false;
       if (type.flags & OPAQUE_TYPE_FLAGS) return false;
@@ -106,12 +155,10 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
         return typeHasUuidBrand(unwrappedReadonly, depth + 1);
       }
 
-      if (type.isUnion()) {
-        return type.types.some((t) => typeHasUuidBrand(t, depth + 1));
-      }
-
-      if (type.isIntersection()) {
-        return type.types.some((t) => typeHasUuidBrand(t, depth + 1));
+      if (type.isUnionType() || type.isIntersectionType()) {
+        return (type as UnionOrIntersectionType)
+          .getTypes()
+          .some((t) => typeHasUuidBrand(t, depth + 1));
       }
 
       const apparent = checker.getApparentType(type);
@@ -119,21 +166,38 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
       return brand !== undefined;
     }
 
-    function getArrayElementType(type: ts.Type): ts.Type | null {
-      if (checker.isArrayType(type) || checker.isTupleType(type)) {
-        const args = checker.getTypeArguments(type as ts.TypeReference);
-        if (args.length === 0) return null;
-        if (args.every((a) => a === args[0])) return args[0] ?? null;
-        // Heterogeneous tuple — only fold to a single type if all branches are Uuid
-        return args.every((a) => typeHasUuidBrand(a))
-          ? (args[0] ?? null)
-          : null;
+    function getArrayElementType(type: Type): Type | null {
+      let cached = elementCache.get(type.id);
+      if (cached === undefined) {
+        cached = getArrayElementTypeWorker(type);
+        elementCache.set(type.id, cached);
       }
-      const aliasName = type.aliasSymbol?.getName();
-      if (aliasName === 'ReadonlyArray' && type.aliasTypeArguments?.[0]) {
-        return type.aliasTypeArguments[0];
+      return cached;
+    }
+
+    function getArrayElementTypeWorker(type: Type): Type | null {
+      if (checker.isArrayType(type) || checker.isTupleType(type)) {
+        const args = checker.getTypeArguments(type as TypeReference);
+        const first = args[0];
+        if (first === undefined) return null;
+        if (args.every((a) => a.id === first.id)) return first;
+        // Heterogeneous tuple — only fold to a single type if all branches are Uuid
+        return args.every((a) => typeHasUuidBrand(a)) ? first : null;
+      }
+      const aliasName = type.getAliasSymbol()?.name;
+      if (aliasName === 'ReadonlyArray') {
+        return type.getAliasTypeArguments()[0] ?? null;
       }
       return null;
+    }
+
+    function classifyType(type: Type): TypeKind {
+      let cached = kindCache.get(type.id);
+      if (cached === undefined) {
+        cached = classifyTypeWorker(type);
+        kindCache.set(type.id, cached);
+      }
+      return cached;
     }
 
     /**
@@ -141,15 +205,15 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
      * homogeneous Uuid tuple/ReadonlyArray), or 'other'. Walks unions so
      * `Uuid | undefined` stays 'uuid', and skips Promise wrappers.
      */
-    function classifyType(
-      type: ts.Type,
-    ): 'uuid' | 'uuid-array' | 'opaque' | 'other' {
+    function classifyTypeWorker(type: Type): TypeKind {
       if (type.flags & OPAQUE_TYPE_FLAGS) return 'opaque';
       if (isPromiseType(type)) return 'other';
 
       // Strip nullable union members for classification purposes.
-      const meaningful = type.isUnion()
-        ? type.types.filter((t) => !(t.flags & SKIPPED_TYPE_FLAGS))
+      const meaningful = type.isUnionType()
+        ? (type as UnionOrIntersectionType)
+            .getTypes()
+            .filter((t) => !(t.flags & SKIPPED_TYPE_FLAGS))
         : [type];
 
       if (meaningful.length === 0) return 'other';
@@ -184,8 +248,7 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
     function checkNameForType(
       reportTarget: TSESTree.Node,
       name: string,
-      type: ts.Type,
-      reverseExempt: boolean,
+      type: Type,
     ): void {
       const kind = classifyType(type);
       if (kind === 'opaque') return;
@@ -201,7 +264,7 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
       }
 
       // Reverse direction
-      if (!enforceReverse || reverseExempt) return;
+      if (!enforceReverse) return;
       if (isAllowedNonUuid(name)) return;
 
       if (kind !== 'uuid' && nameIsSingularIdSuffix(name)) {
@@ -212,6 +275,37 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
       }
       if (kind !== 'uuid-array' && nameIsPluralIdsSuffix(name)) {
         reportNode(reportTarget, 'idsSuffixRequiresUuidArray', name);
+      }
+    }
+
+    /** String-literal keys (e.g. 'user-id') get flagged when the type is Uuid. */
+    function checkLiteralKeyForType(
+      reportTarget: TSESTree.Node,
+      name: string,
+      type: Type,
+    ): void {
+      const kind = classifyType(type);
+      if (kind === 'uuid') {
+        reportNode(reportTarget, 'uuidFieldMustEndWithId', name);
+      } else if (kind === 'uuid-array') {
+        reportNode(reportTarget, 'uuidArrayFieldMustEndWithIds', name);
+      }
+    }
+
+    function checkObjectPropertyType(
+      { key, name }: IObjectPropertyCheck,
+      propType: Type,
+    ): void {
+      const kind = classifyType(propType);
+      if (kind === 'opaque') return;
+
+      // Only forward-direction checks fire on contextually-typed object literals;
+      // reverse direction over-fires here (every literal property named `userId`
+      // would demand the contextual prop be Uuid even when the contract uses string).
+      if (kind === 'uuid' && !nameIsSingularIdSuffix(name)) {
+        reportNode(key, 'uuidFieldMustEndWithId', name);
+      } else if (kind === 'uuid-array' && !nameIsPluralIdsSuffix(name)) {
+        reportNode(key, 'uuidArrayFieldMustEndWithIds', name);
       }
     }
 
@@ -237,27 +331,28 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
       return null;
     }
 
-    function typeOfTSNode(esNode: TSESTree.Node): ts.Type {
-      const tsNode = services.esTreeNodeToTSNodeMap.get(esNode);
-      return checker.getTypeAtLocation(tsNode);
+    // --- collection -------------------------------------------------------
+    // Every check is queued in traversal order and answered at Program:exit.
+
+    const checks: Array<INameCheck | IObjectPropertyCheck> = [];
+
+    function checkName(
+      reportTarget: TSESTree.Node,
+      name: string,
+      typeNode: TSESTree.Node,
+      literalKey = false,
+    ): void {
+      checks.push({ kind: 'name', reportTarget, name, typeNode, literalKey });
+    }
+
+    function checkBinding(id: TSESTree.Identifier): void {
+      checkName(id, id.name, id);
     }
 
     function checkPropertyDefinition(node: TSESTree.PropertyDefinition): void {
       const keyInfo = getKeyName(node.key, node.computed);
       if (!keyInfo) return;
-      const tsNode = services.esTreeNodeToTSNodeMap.get(node);
-      const type = checker.getTypeAtLocation(tsNode);
-      if (keyInfo.literalKey) {
-        // String-literal keys (e.g. 'user-id') get flagged when the type is Uuid.
-        const kind = classifyType(type);
-        if (kind === 'uuid') {
-          reportNode(node.key, 'uuidFieldMustEndWithId', keyInfo.name);
-        } else if (kind === 'uuid-array') {
-          reportNode(node.key, 'uuidArrayFieldMustEndWithIds', keyInfo.name);
-        }
-        return;
-      }
-      checkNameForType(node.key, keyInfo.name, type, false);
+      checkName(node.key, keyInfo.name, node, keyInfo.literalKey);
     }
 
     function checkTSPropertySignature(
@@ -266,17 +361,7 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
       const keyInfo = getKeyName(node.key, node.computed);
       if (!keyInfo) return;
       if (!node.typeAnnotation) return;
-      const type = typeOfTSNode(node.typeAnnotation.typeAnnotation);
-      if (keyInfo.literalKey) {
-        const kind = classifyType(type);
-        if (kind === 'uuid') {
-          reportNode(node.key, 'uuidFieldMustEndWithId', keyInfo.name);
-        } else if (kind === 'uuid-array') {
-          reportNode(node.key, 'uuidArrayFieldMustEndWithIds', keyInfo.name);
-        }
-        return;
-      }
-      checkNameForType(node.key, keyInfo.name, type, false);
+      checkName(node.key, keyInfo.name, node, keyInfo.literalKey);
     }
 
     function checkParameter(param: TSESTree.Parameter): void {
@@ -292,17 +377,13 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
           : unwrapped;
 
       if (inner.type === AST_NODE_TYPES.Identifier) {
-        const tsNode = services.esTreeNodeToTSNodeMap.get(inner);
-        const type = checker.getTypeAtLocation(tsNode);
-        checkNameForType(inner, inner.name, type, false);
+        checkBinding(inner);
         return;
       }
       if (inner.type === AST_NODE_TYPES.RestElement) {
         const arg = inner.argument;
         if (arg.type === AST_NODE_TYPES.Identifier) {
-          const tsNode = services.esTreeNodeToTSNodeMap.get(arg);
-          const type = checker.getTypeAtLocation(tsNode);
-          checkNameForType(arg, arg.name, type, false);
+          checkBinding(arg);
         } else if (arg.type === AST_NODE_TYPES.ObjectPattern) {
           checkObjectPattern(arg);
         } else if (arg.type === AST_NODE_TYPES.ArrayPattern) {
@@ -327,9 +408,7 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
             ? prop.value.left
             : prop.value;
         if (value.type === AST_NODE_TYPES.Identifier) {
-          const tsNode = services.esTreeNodeToTSNodeMap.get(value);
-          const type = checker.getTypeAtLocation(tsNode);
-          checkNameForType(value, value.name, type, false);
+          checkBinding(value);
         } else if (value.type === AST_NODE_TYPES.ObjectPattern) {
           checkObjectPattern(value);
         } else if (value.type === AST_NODE_TYPES.ArrayPattern) {
@@ -346,9 +425,7 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
             ? element.left
             : element;
         if (inner.type === AST_NODE_TYPES.Identifier) {
-          const tsNode = services.esTreeNodeToTSNodeMap.get(inner);
-          const type = checker.getTypeAtLocation(tsNode);
-          checkNameForType(inner, inner.name, type, false);
+          checkBinding(inner);
         } else if (inner.type === AST_NODE_TYPES.ObjectPattern) {
           checkObjectPattern(inner);
         } else if (inner.type === AST_NODE_TYPES.ArrayPattern) {
@@ -356,9 +433,7 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
         } else if (inner.type === AST_NODE_TYPES.RestElement) {
           const arg = inner.argument;
           if (arg.type === AST_NODE_TYPES.Identifier) {
-            const tsNode = services.esTreeNodeToTSNodeMap.get(arg);
-            const type = checker.getTypeAtLocation(tsNode);
-            checkNameForType(arg, arg.name, type, false);
+            checkBinding(arg);
           }
         }
       }
@@ -367,9 +442,7 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
     function checkVariableDeclarator(node: TSESTree.VariableDeclarator): void {
       const id = node.id;
       if (id.type === AST_NODE_TYPES.Identifier) {
-        const tsNode = services.esTreeNodeToTSNodeMap.get(id);
-        const type = checker.getTypeAtLocation(tsNode);
-        checkNameForType(id, id.name, type, false);
+        checkBinding(id);
       } else if (id.type === AST_NODE_TYPES.ObjectPattern) {
         checkObjectPattern(id);
       } else if (id.type === AST_NODE_TYPES.ArrayPattern) {
@@ -387,33 +460,85 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
         false,
       );
       if (!keyInfo) return;
+      checks.push({
+        kind: 'objectProperty',
+        key: prop.key,
+        name: keyInfo.name,
+        objectExpr,
+      });
+    }
 
-      const objTsNode = services.esTreeNodeToTSNodeMap.get(objectExpr);
-      const contextual = checker.getContextualType(objTsNode as ts.Expression);
-      if (!contextual) return;
-      const propSymbol = contextual.getProperty(keyInfo.name);
-      if (!propSymbol) return;
-      const declaration =
-        propSymbol.valueDeclaration ?? propSymbol.declarations?.[0];
-      if (!declaration) return;
-      const propType = checker.getTypeOfSymbolAtLocation(
-        propSymbol,
-        declaration,
+    // --- verification -----------------------------------------------------
+
+    function verify(): void {
+      const types = typesFor(context);
+      if (types === undefined) return;
+      checker = types.checker;
+
+      const nameChecks = checks.filter(
+        (check): check is INameCheck => check.kind === 'name',
+      );
+      const nameTypes = new Map<INameCheck, Type | undefined>();
+      if (nameChecks.length > 0) {
+        const answered = checker.getTypeAtLocation(
+          nameChecks.map(({ typeNode }) => types.nodeFor(typeNode)),
+        );
+        nameChecks.forEach((check, index) =>
+          nameTypes.set(check, answered[index]),
+        );
+      }
+
+      // The property each literal property lands on, in its object's contextual type.
+      const contextualTypes = new Map<
+        TSESTree.ObjectExpression,
+        Type | undefined
+      >();
+      const landingProperties = new Map<IObjectPropertyCheck, TsSymbol>();
+      for (const check of checks) {
+        if (check.kind !== 'objectProperty') continue;
+        if (!contextualTypes.has(check.objectExpr)) {
+          contextualTypes.set(
+            check.objectExpr,
+            checker.getContextualType(
+              types.nodeFor(check.objectExpr) as Expression,
+            ),
+          );
+        }
+        const contextual = contextualTypes.get(check.objectExpr);
+        const propSymbol = contextual?.getProperty(check.name);
+        if (
+          propSymbol &&
+          (propSymbol.valueDeclaration ?? propSymbol.declarations[0])
+        ) {
+          landingProperties.set(check, propSymbol);
+        }
+      }
+      // A property's type at its own declaration is its declared type: no flow
+      // narrowing applies there, so its symbol's type is the same answer.
+      const landing = [...landingProperties];
+      const landingTypes =
+        landing.length === 0
+          ? []
+          : checker.getTypeOfSymbol(landing.map(([, symbol]) => symbol));
+      const propertyTypes = new Map(
+        landing.map(([check], index) => [check, landingTypes[index]]),
       );
 
-      const kind = classifyType(propType);
-      if (kind === 'opaque') return;
-
-      // Only forward-direction checks fire on contextually-typed object literals;
-      // reverse direction over-fires here (every literal property named `userId`
-      // would demand the contextual prop be Uuid even when the contract uses string).
-      if (kind === 'uuid' && !nameIsSingularIdSuffix(keyInfo.name)) {
-        reportNode(prop.key, 'uuidFieldMustEndWithId', keyInfo.name);
-      } else if (
-        kind === 'uuid-array' &&
-        !nameIsPluralIdsSuffix(keyInfo.name)
-      ) {
-        reportNode(prop.key, 'uuidArrayFieldMustEndWithIds', keyInfo.name);
+      for (const check of checks) {
+        if (check.kind === 'name') {
+          const type = nameTypes.get(check);
+          if (type === undefined) continue;
+          if (check.literalKey) {
+            checkLiteralKeyForType(check.reportTarget, check.name, type);
+          } else {
+            checkNameForType(check.reportTarget, check.name, type);
+          }
+          continue;
+        }
+        const propType = propertyTypes.get(check);
+        if (propType !== undefined) {
+          checkObjectPropertyType(check, propType);
+        }
       }
     }
 
@@ -434,9 +559,7 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
       CatchClause(node: TSESTree.CatchClause): void {
         if (!node.param) return;
         if (node.param.type === AST_NODE_TYPES.Identifier) {
-          const tsNode = services.esTreeNodeToTSNodeMap.get(node.param);
-          const type = checker.getTypeAtLocation(tsNode);
-          checkNameForType(node.param, node.param.name, type, false);
+          checkBinding(node.param);
         } else if (node.param.type === AST_NODE_TYPES.ObjectPattern) {
           checkObjectPattern(node.param);
         } else if (node.param.type === AST_NODE_TYPES.ArrayPattern) {
@@ -460,6 +583,11 @@ export const uuidFieldNaming = createRule<[Options], MessageIds>({
           if (prop.type !== AST_NODE_TYPES.Property) continue;
           checkObjectExpressionProperty(prop, node);
         }
+      },
+
+      // Types are asked for once per file, batched, when the file's declarations are all known.
+      'Program:exit'(): void {
+        if (checks.length > 0) verify();
       },
     };
   },

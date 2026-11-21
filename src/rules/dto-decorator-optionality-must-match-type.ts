@@ -1,7 +1,8 @@
-import type { TSESTree } from '@typescript-eslint/utils';
-import { AST_NODE_TYPES, ESLintUtils } from '@typescript-eslint/utils';
-import * as ts from 'typescript';
+import type { TSESTree } from '@typescript-eslint/types';
+import { AST_NODE_TYPES } from '@typescript-eslint/types';
+import { type Type, TypeFlags, type UnionOrIntersectionType } from 'tsrs/sync';
 
+import { typesFor } from '../types/type-service.js';
 import { createRule } from '../utils/create-rule.js';
 
 type MessageIds =
@@ -15,6 +16,20 @@ const OPTIONAL_SUFFIX_RE = /Optional$/;
 const MAX_NULL_WALK_DEPTH = 8;
 
 type NullableOptionState = 'true' | 'false' | 'absent' | 'unknown';
+
+/** A DTO property with field-shape decorators, waiting for its type. */
+interface ICandidate {
+  /**
+   * Its type is asked of the property, not of its type annotation: tsrs types the
+   * name inside a type reference (`name!: MaybeName`) as `any`. The property's
+   * type differs from its annotation only by the `undefined` a `?` adds.
+   */
+  property: TSESTree.PropertyDefinition;
+  fieldShapeDecorators: Array<{ node: TSESTree.Decorator; name: string }>;
+  propertyName: string;
+  isPropertyOptional: boolean;
+  propertyIsEffectivelyOptional: boolean;
+}
 
 export const dtoDecoratorOptionalityMustMatchType = createRule<[], MessageIds>({
   name: 'dto-decorator-optionality-must-match-type',
@@ -38,9 +53,6 @@ export const dtoDecoratorOptionalityMustMatchType = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create(context) {
-    const services = ESLintUtils.getParserServices(context);
-    const checker = services.program.getTypeChecker();
-
     function getDecoratorCalleeName(
       decorator: TSESTree.Decorator,
     ): string | null {
@@ -114,14 +126,13 @@ export const dtoDecoratorOptionalityMustMatchType = createRule<[], MessageIds>({
       return result;
     }
 
-    function typeIncludesNull(type: ts.Type, depth = 0): boolean {
+    function typeIncludesNull(type: Type, depth = 0): boolean {
       if (depth > MAX_NULL_WALK_DEPTH) return false;
-      if (type.flags & ts.TypeFlags.Null) return true;
-      if (type.isUnion()) {
-        return type.types.some((t) => typeIncludesNull(t, depth + 1));
-      }
-      if (type.isIntersection()) {
-        return type.types.some((t) => typeIncludesNull(t, depth + 1));
+      if (type.flags & TypeFlags.Null) return true;
+      if (type.isUnionType() || type.isIntersectionType()) {
+        return (type as UnionOrIntersectionType)
+          .getTypes()
+          .some((t) => typeIncludesNull(t, depth + 1));
       }
       return false;
     }
@@ -175,6 +186,8 @@ export const dtoDecoratorOptionalityMustMatchType = createRule<[], MessageIds>({
       return false;
     }
 
+    const candidates: ICandidate[] = [];
+
     function checkPropertyDefinition(node: TSESTree.PropertyDefinition): void {
       if (node.static) return;
       if (
@@ -209,22 +222,24 @@ export const dtoDecoratorOptionalityMustMatchType = createRule<[], MessageIds>({
       const hasRealDefault =
         node.value !== null && !isInitializerUndefinable(node);
 
-      let typeIsNullable = false;
-      if (node.typeAnnotation) {
-        const tsTypeNode = services.esTreeNodeToTSNodeMap.get(
-          node.typeAnnotation.typeAnnotation,
-        );
-        const tsType = checker.getTypeAtLocation(tsTypeNode);
-        typeIsNullable = typeIncludesNull(tsType);
-      } else {
-        const tsNode = services.esTreeNodeToTSNodeMap.get(node);
-        const tsType = checker.getTypeAtLocation(tsNode);
-        typeIsNullable = typeIncludesNull(tsType);
-      }
+      candidates.push({
+        property: node,
+        fieldShapeDecorators,
+        propertyName,
+        isPropertyOptional,
+        propertyIsEffectivelyOptional: isPropertyOptional || hasRealDefault,
+      });
+    }
 
-      const propertyIsEffectivelyOptional =
-        isPropertyOptional || hasRealDefault;
-
+    function reportProperty(
+      {
+        fieldShapeDecorators,
+        propertyName,
+        isPropertyOptional,
+        propertyIsEffectivelyOptional,
+      }: ICandidate,
+      typeIsNullable: boolean,
+    ): void {
       for (const { node: decoratorNode, name } of fieldShapeDecorators) {
         const isOptionalDecorator = isOptionalVariantName(name);
 
@@ -264,6 +279,22 @@ export const dtoDecoratorOptionalityMustMatchType = createRule<[], MessageIds>({
 
     return {
       PropertyDefinition: checkPropertyDefinition,
+      // Types are asked for once per file, in one request, when the file's properties are all known.
+      'Program:exit'(): void {
+        if (candidates.length === 0) return;
+        const types = typesFor(context);
+        if (types === undefined) return;
+        const propertyTypes = types.checker.getTypeAtLocation(
+          candidates.map(({ property }) => types.nodeFor(property)),
+        );
+        candidates.forEach((candidate, index) => {
+          const propertyType = propertyTypes[index];
+          reportProperty(
+            candidate,
+            propertyType !== undefined && typeIncludesNull(propertyType),
+          );
+        });
+      },
     };
   },
 });
