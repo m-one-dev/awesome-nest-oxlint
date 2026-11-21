@@ -9,6 +9,9 @@ const filename = path.join(
   'dto-decorator-optionality-must-match-type.ts',
 );
 
+// Outside the fixtures tsconfig, and no other tsconfig below the package root holds it: a file of no program.
+const noProgramFilename = path.join(fixturesDir, '..', 'no-program.ts');
+
 const ruleTester = new RuleTester();
 
 const preamble = `
@@ -31,6 +34,14 @@ ruleTester.run(
   dtoDecoratorOptionalityMustMatchType,
   {
     valid: [
+      {
+        // Whether the type includes null needs a program; without one only the optionality is checked.
+        name: 'in a file of no program, nullable:true on a non-nullable type is not reported',
+        filename: noProgramFilename,
+        code: `${preamble}
+          class FooDto { @StringField({ nullable: true }) readonly name!: string; }
+        `,
+      },
       {
         name: 'required decorator + required non-nullable property',
         filename,
@@ -178,6 +189,19 @@ ruleTester.run(
     ],
 
     invalid: [
+      {
+        name: 'in a file of no program, an optional decorator on a required property is still reported',
+        filename: noProgramFilename,
+        code: `${preamble}
+          class FooDto { @StringFieldOptional() readonly name!: string; }
+        `,
+        errors: [
+          {
+            messageId: 'optionalDecoratorRequiresOptionalProperty',
+            data: { decorator: 'StringFieldOptional', property: 'name' },
+          },
+        ],
+      },
       {
         name: 'optional decorator on required property',
         filename,

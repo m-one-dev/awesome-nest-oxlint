@@ -291,28 +291,27 @@ export const preferRawTerminalOnSelect = createRule<[], MessageIds>({
       // Types are asked for once per file, in one request, when the file's terminals are all known.
       'Program:exit'(): void {
         if (candidates.length === 0) return;
-        const types = typesFor(context);
-        if (types === undefined) return;
-        checker = types.checker;
 
         const typed = candidates.filter(({ needsType }) => needsType);
-        const receiverTypes =
-          typed.length === 0
-            ? []
-            : checker.getTypeAtLocation(
-                typed.map(({ callee }) => types.nodeFor(callee.object)),
-              );
-        const builders = new Set(
-          typed
-            .filter((_, index) => {
-              const receiverType = receiverTypes[index];
-              return (
-                receiverType !== undefined &&
-                analyzeReceiverType(receiverType).isQb
-              );
-            })
-            .map(({ node }) => node),
-        );
+        // A file in no program still gets the findings its syntax decides: a chain rooted in createQueryBuilder.
+        const types = typed.length === 0 ? undefined : typesFor(context);
+        const builders = new Set<TSESTree.CallExpression>();
+
+        if (types !== undefined) {
+          checker = types.checker;
+          const receiverTypes = checker.getTypeAtLocation(
+            typed.map(({ callee }) => types.nodeFor(callee.object)),
+          );
+          typed.forEach(({ node }, index) => {
+            const receiverType = receiverTypes[index];
+            if (
+              receiverType !== undefined &&
+              analyzeReceiverType(receiverType).isQb
+            ) {
+              builders.add(node);
+            }
+          });
+        }
 
         for (const { node, callee, method, needsType } of candidates) {
           if (!needsType || builders.has(node)) {

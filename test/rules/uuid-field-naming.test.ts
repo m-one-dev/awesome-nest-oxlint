@@ -17,6 +17,14 @@ const preamble = `
 ruleTester.run('uuid-field-naming', uuidFieldNaming, {
   valid: [
     {
+      // The source spells the name longer than it reads, so TypeScript's identifier ends past start + name.length.
+      name: 'a unicode escape in the name: Uuid named userId',
+      filename,
+      code: `${preamble}
+        const \\u0075serId: Uuid = '' as Uuid;
+      `,
+    },
+    {
       name: 'class field: Uuid named userId',
       filename,
       code: `${preamble}
@@ -269,6 +277,14 @@ ruleTester.run('uuid-field-naming', uuidFieldNaming, {
   ],
 
   invalid: [
+    {
+      name: 'a unicode escape in the name: Uuid named user',
+      filename,
+      code: `${preamble}
+        class FooDto { \\u0075ser!: Uuid; }
+      `,
+      errors: [{ messageId: 'uuidFieldMustEndWithId', data: { name: 'user' } }],
+    },
     {
       name: 'class field: Uuid named user',
       filename,

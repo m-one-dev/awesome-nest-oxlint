@@ -238,7 +238,8 @@ export const dtoDecoratorOptionalityMustMatchType = createRule<[], MessageIds>({
         isPropertyOptional,
         propertyIsEffectivelyOptional,
       }: ICandidate,
-      typeIsNullable: boolean,
+      /** Undefined in a file of no program: then only the optionality, which the syntax decides, is checked. */
+      typeIsNullable: boolean | undefined,
     ): void {
       for (const { node: decoratorNode, name } of fieldShapeDecorators) {
         const isOptionalDecorator = isOptionalVariantName(name);
@@ -258,7 +259,7 @@ export const dtoDecoratorOptionalityMustMatchType = createRule<[], MessageIds>({
         }
 
         const nullableOption = readNullableOption(decoratorNode);
-        if (nullableOption === 'unknown') continue;
+        if (nullableOption === 'unknown' || typeIsNullable === undefined) continue;
 
         const nullableDeclared = nullableOption === 'true';
         if (nullableDeclared && !typeIsNullable) {
@@ -283,7 +284,12 @@ export const dtoDecoratorOptionalityMustMatchType = createRule<[], MessageIds>({
       'Program:exit'(): void {
         if (candidates.length === 0) return;
         const types = typesFor(context);
-        if (types === undefined) return;
+        if (types === undefined) {
+          for (const candidate of candidates) {
+            reportProperty(candidate, undefined);
+          }
+          return;
+        }
         const propertyTypes = types.checker.getTypeAtLocation(
           candidates.map(({ property }) => types.nodeFor(property)),
         );
